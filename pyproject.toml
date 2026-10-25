@@ -1,0 +1,34 @@
+[project]
+name = "claude-rotator"
+version = "0.4.0"
+description = "Rotate several Claude subscriptions behind one Claude Code setup via a local proxy"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Phaleanopsis" }]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+]
+dependencies = []
+
+[project.scripts]
+claude-rotator = "claude_rotator.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[build-system]
+requires = ["uv_build>=0.7.21,<0.9"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

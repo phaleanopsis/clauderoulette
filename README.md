@@ -52,30 +52,70 @@ The proxy stays on the current account unless another one scores **1.5× higher*
 
 ## Setup
 
-Claude Code must be logged in normally (any account, `claude` → `/login`).
+You need [uv](https://docs.astral.sh/uv/), and Claude Code logged in normally (any account, `claude` → `/login`). The package has no dependencies beyond the Python standard library (Python ≥ 3.10).
 
 ```bash
-python3 claude_rotator.py add work --primary     # follow the prompts: /login as work, then /exit
-python3 claude_rotator.py add main               # same for the second account
-python3 claude_rotator.py status
-python3 claude_rotator.py serve --debug          # first run in the foreground to watch it
-python3 claude_rotator.py run                    # in another terminal: claude through the proxy
-python3 claude_rotator.py run --account main     # pin a session to one account
+git clone <your repo URL> && cd <repo>
+uv tool install --editable .              # puts `claude-rotator` on your PATH (~/.local/bin)
+
+claude-rotator add work --primary         # follow the prompts: /login as work, then /exit
+claude-rotator add main                   # same for the second account
+claude-rotator status
+claude-rotator install                    # background proxy + menu bar app + client settings (below)
 ```
 
-### Route every Claude Code session (global setting)
+The install is editable, so the command always runs the code in this checkout. If you'd rather not install a global command, run every command as `uv run claude-rotator …` from the repository instead.
 
-Instead of starting sessions with `run`, you can make every Claude Code session use the proxy by adding this to `~/.claude/settings.json`:
+To try it without installing anything:
 
-```json
-"env": {
-  "ANTHROPIC_BASE_URL": "http://127.0.0.1:8789"
-}
+```bash
+claude-rotator serve --debug              # run the proxy in the foreground to watch it
+claude-rotator run                        # in another terminal: claude through the proxy
+claude-rotator run --account main         # pin a session to one account
 ```
 
-- **While the proxy is down, every session that picks up this setting fails** with a connection error. Use it together with the launchd service below.
+### Updating
+
+```bash
+git pull
+claude-rotator install
+```
+
+`install` is safe to re-run at any time. It rebuilds the menu bar app, rewrites both LaunchAgents with the current paths, restarts them, and leaves settings that are already correct untouched. Sessions that go through the proxy fail for a second or two while it restarts.
+
+If you installed with `uv tool install` *without* `--editable`, run `uv tool install --reinstall .` before `install`.
+
+### Route every Claude Code session (done by `install`)
+
+By default `install` points Claude Code at the proxy in two places:
+
+1. **`~/.claude/settings.json`** (terminal `claude`). It adds or updates:
+
+   ```json
+   "env": {
+     "ANTHROPIC_BASE_URL": "http://127.0.0.1:8789"
+   }
+   ```
+
+2. **VS Code user settings** (the Claude Code extension), at `~/Library/Application Support/Code/User/settings.json`, plus Code - Insiders, Cursor and VSCodium if those are installed. It adds or updates:
+
+   ```json
+   "claudeCode.environmentVariables": [
+     { "name": "ANTHROPIC_BASE_URL", "value": "http://127.0.0.1:8789" }
+   ]
+   ```
+
+How the edits are made:
+- **Only that one key changes.** Its other entries (other env vars, other extension variables) are kept. Comments and formatting in the file stay exactly as they were, because VS Code's settings file is JSONC and is edited as text, not reloaded and re-dumped.
+- **A backup is made first.** Before the first change, the original is saved next to the file as `settings.json.bak-rotator`. Later reinstalls never overwrite that backup.
+- **Broken files are skipped.** A file that can't be parsed (e.g. a missing comma) is left alone and reported in the `install` output.
+- **Opting out:** `--no-claude-settings` and `--no-vscode-settings` skip either file.
+- **Undoing it:** `uninstall` removes the entries again, but only if they still point at this proxy.
+
+Points to know:
+- **While the proxy is down, every session that picks up these settings fails** with a connection error. That's why `install` sets them together with the background service.
 - **This is a documented setup.** Anthropic's [gateway docs](https://code.claude.com/docs/en/llm-gateway#subscriptions-and-gateways) say that setting only `ANTHROPIC_BASE_URL`, with no gateway credential, keeps the claude.ai login active, so subscription limits and billing apply. The proxy must forward the OAuth `anthropic-beta` value, which it does because it passes headers through unchanged.
-- **Terminal `claude` (macOS Terminal, iTerm) is routed** (tested 2026-10-25, Claude Code 2.1.308). In my testing, though, an `ANTHROPIC_BASE_URL` already set in the environment won over the settings file, even though the docs say the settings file should win. Shells started by the Claude desktop app (including its Terminal panel) inherit `ANTHROPIC_BASE_URL=https://api.anthropic.com`, so plain `claude` there goes direct. `claude_rotator.py run` works everywhere because it sets the variable itself.
+- **Terminal `claude` (macOS Terminal, iTerm) is routed** (tested 2026-10-25, Claude Code 2.1.308). In my testing, though, an `ANTHROPIC_BASE_URL` already set in the environment won over the settings file, even though the docs say the settings file should win. Shells started by the Claude desktop app (including its Terminal panel) inherit `ANTHROPIC_BASE_URL=https://api.anthropic.com`, so plain `claude` there goes direct. `claude-rotator run` works everywhere because it sets the variable itself.
 - **The Claude desktop app's Code tab is not routed, and this tool doesn't support routing it.** According to the [docs](https://code.claude.com/docs/en/llm-gateway-connect#desktop-app), the desktop app ignores `ANTHROPIC_BASE_URL` and `settings.json`. It only uses a gateway through its *third-party inference* configuration (Developer → Configure Third-Party Inference), which relaunches the whole app into "Claude Desktop on 3P" mode:
   - your claude.ai sign-in isn't used, and cloud environments and Remote Control are unavailable;
   - the app sends a fixed gateway API key instead of your subscription login, so making it work would mean disguising API-configured traffic as subscription traffic;
@@ -83,24 +123,24 @@ Instead of starting sessions with `run`, you can make every Claude Code session 
 
   Desktop Code-tab usage still counts toward the signed-in account's limits, and the proxy sees it through its usage checks.
 - **claude.ai chat** (desktop or web) can never be routed. It still counts toward the same 5h/weekly limits, and the proxy sees that through its usage checks.
-- **To undo it,** delete the `env` block, or restore `~/.claude/settings.json.bak-rotator`.
+- **To undo it by hand,** delete the entries, or restore the `.bak-rotator` copies.
 
 ### Background service and menu bar app
 
 ```bash
-python3 claude_rotator.py install          # proxy + menu bar app, both start at every login
-python3 claude_rotator.py install --no-menubar
-python3 claude_rotator.py uninstall        # removes both (credentials and config are kept)
+claude-rotator install          # proxy + menu bar app, both start at every login, + client settings
+claude-rotator install --no-menubar
+claude-rotator uninstall        # removes both and the client settings (credentials and config are kept)
 ```
 
 `install` sets up two LaunchAgents in `~/Library/LaunchAgents`:
 
 | Agent | What it runs | Restarts |
 |---|---|---|
-| `com.user.claude-rotator` | `claude_rotator.py serve`, logging to `~/.claude-rotator/serve.log` | always (`KeepAlive`) |
+| `com.user.claude-rotator` | `<python> -m claude_rotator serve`, logging to `~/.claude-rotator/serve.log` | always (`KeepAlive`) |
 | `com.user.claude-rotator.bar` | `~/Applications/Claude Rotator.app` | only after a crash; choosing **Quit** keeps it closed until the next login |
 
-Both start whenever you log in, so after every restart of the Mac. Re-run `install` after moving the repository or updating Python, because the agent stores the absolute paths.
+Both start whenever you log in, so after every restart of the Mac. The agent stores the absolute path of the Python that ran `install`. Re-run `install` after moving the repository or reinstalling the tool; `status` warns you when the service runs a different installation.
 
 **Sleep and wake.** Sleep pauses both processes and wake resumes them; nothing needs relaunching. On wake:
 - `serve` notices the gap and fetches fresh usage straight away, retrying every minute until the network is back.
@@ -112,11 +152,11 @@ If the 07:00 ping falls while the Mac is asleep, it runs on wake, up to 09:00. T
 sudo pmset repeat wakeorpoweron MTWRFSU 06:58:00
 ```
 
-**Menu bar app.** This is a SwiftUI `MenuBarExtra` compiled locally by `install` from [`menubar/ClaudeRotatorBar.swift`](menubar/ClaudeRotatorBar.swift). It needs the Xcode command line tools (`xcode-select --install`), uses only Apple frameworks, and is signed ad hoc.
+**Menu bar app.** This is a SwiftUI `MenuBarExtra` compiled locally by `install` from [`src/claude_rotator/menubar/ClaudeRotatorBar.swift`](src/claude_rotator/menubar/ClaudeRotatorBar.swift), which ships inside the package. It needs the Xcode command line tools (`xcode-select --install`), uses only Apple frameworks, and is signed ad hoc.
 - **Menu bar:** shows the active account and its 5-hour usage (e.g. `work 12%`), or ⚠ `off` when the proxy isn't running.
 - **Panel:** shows each account's 5-hour and weekly bars with reset times, the primary tag, request counts, rate-limit and dead-login warnings, and the next ping time.
 - **Buttons:** Ping now, Restart (the service), Log, Folder (`~/.claude-rotator`) and Quit.
-- **Credentials:** the app never reads them. It only reads `~/.claude-rotator/state.json` and calls `launchctl` and the script.
+- **Credentials:** the app never reads them. It only reads `~/.claude-rotator/state.json` and calls `launchctl` and the CLI.
 
 ### Using it on another machine
 
@@ -124,18 +164,39 @@ Nothing personal lives in this repository. Credentials, account names and usage 
 
 ```bash
 git clone <your repo URL> && cd <repo>
-python3 claude_rotator.py add work --primary
-python3 claude_rotator.py add main
-python3 claude_rotator.py install
+uv tool install --editable .
+claude-rotator add work --primary
+claude-rotator add main
+claude-rotator install
 ```
 
 Each `add` creates a separate login session for that machine, so two machines never share or invalidate each other's refresh tokens. Revoking one machine's login doesn't affect the others. The tool needs macOS for Keychain storage; on Linux it falls back to a chmod-600 `~/.claude-rotator/tokens.json`.
 
-Config: `~/.claude-rotator/config.json`. Only the keys you set are stored; everything else follows the defaults in the script. Log: `~/.claude-rotator/serve.log`.
+Config: `~/.claude-rotator/config.json`. Only the keys you set are stored; everything else follows `DEFAULTS` in [`src/claude_rotator/config.py`](src/claude_rotator/config.py). Log: `~/.claude-rotator/serve.log`.
+
+## Development
+
+```bash
+uv sync                  # creates .venv with the package (editable) and the dev tools
+uv run pytest            # unit tests, plus the proxy against a fake upstream; never touches the real Keychain
+uv run ruff check
+```
+
+| Module | Responsibility |
+|---|---|
+| `config.py` | paths under `~/.claude-rotator`, `DEFAULTS`, config/state files |
+| `credentials.py` | Keychain / token file, OAuth refresh, importing a login |
+| `usage.py` | usage endpoint and rate-limit headers, the account score |
+| `router.py` | which account each request gets |
+| `proxy.py` | the local HTTP proxy |
+| `priming.py` | the scheduled and automatic pings |
+| `service.py` | LaunchAgents and the menu bar app build |
+| `client_settings.py` | JSONC-preserving edits of the Claude Code and VS Code settings |
+| `cli.py` | the `claude-rotator` commands |
 
 ## Tested vs. unverified
 
-Tested against a fake server:
+Tested against a fake server (the proxy items are covered by `uv run pytest`):
 - importing a login and cleaning up afterwards
 - refreshing a token and saving the rotated refresh token
 - switching accounts per request, and 429 failover

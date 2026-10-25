@@ -11,3 +11,9 @@ state.json
 tokens.json
 *.log
 *.bak*
+
+# uv / build output
+.venv/
+dist/
+.pytest_cache/
+.ruff_cache/

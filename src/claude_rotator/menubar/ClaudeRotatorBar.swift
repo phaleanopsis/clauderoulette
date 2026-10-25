@@ -1,10 +1,10 @@
-// Menu bar companion for claude_rotator.py.
+// Menu bar companion for claude-rotator.
 //
-// Reads ~/.claude-rotator/state.json (written by `claude_rotator.py serve` every ~30 s)
+// Reads ~/.claude-rotator/state.json (written by `claude-rotator serve` every ~30 s)
 // and shows the active account plus 5h/weekly usage. It never touches credentials:
-// actions shell out to launchctl and to the Python script recorded in the state file.
+// actions shell out to launchctl and to the CLI command recorded in the state file.
 //
-// Build: `python3 claude_rotator.py install` (or see build_app() in claude_rotator.py).
+// Build: `claude-rotator install` (or see build_app() in claude_rotator/service.py).
 
 import AppKit
 import SwiftUI
@@ -33,8 +33,7 @@ struct RotatorState: Decodable {
     let primary: String?
     let emails: [String: String?]?
     let next_ping: String?
-    let python: String?
-    let script: String?
+    let command: [String]?  // argv that runs the CLI, e.g. [python, "-m", "claude_rotator"]
 }
 
 private let isoParser = ISO8601DateFormatter()
@@ -109,11 +108,11 @@ final class Model: ObservableObject {
     // MARK: actions
 
     func pingNow() {
-        guard let py = state?.python, let script = state?.script else {
+        guard let cmd = state?.command, let exe = cmd.first else {
             message = "Start the service first."
             return
         }
-        run(py, [script, "prime"], label: "Ping")
+        run(exe, Array(cmd.dropFirst()) + ["prime"], label: "Ping")
     }
 
     func restartService() {
@@ -229,11 +228,11 @@ struct Panel: View {
                 }
             }
             if !m.running && m.state != nil {
-                Text("If Restart doesn't help, check the log. After moving or renaming the repo folder, run `claude_rotator.py install` again.")
+                Text("If Restart doesn't help, check the log. After moving the repo or updating Python, run `claude-rotator install` again.")
                     .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
             }
             if m.accounts.isEmpty {
-                Text("No data yet. Run `claude_rotator.py add` and `install`.")
+                Text("No data yet. Run `claude-rotator add` and `install`.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             ForEach(m.accounts, id: \.self) { name in

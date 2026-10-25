@@ -1,0 +1,13 @@
+# Local Claude Code permissions (contain absolute paths)
+.claude/settings.local.json
+
+__pycache__/
+*.pyc
+.DS_Store
+
+# Never commit anything from the runtime folder (~/.claude-rotator) if it ends up here
+config.json
+state.json
+tokens.json
+*.log
+*.bak*

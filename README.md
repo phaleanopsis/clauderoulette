@@ -1,8 +1,12 @@
-# claude-rotator
+# claude-roulette
 
 Use two (or more) Claude subscriptions from one Claude Code setup. A local proxy picks which account handles each prompt and switches in the middle of a session when that's worth it. Every day at 07:00 the account with less weekly usage gets a tiny Haiku prompt, which starts its 5-hour window.
 
-One file, Python standard library only, no third-party code.
+> [!WARNING]
+> **Experimental, LLM-generated, and not reviewed by a human.**
+>
+> This code was written by an LLM (Claude). No human has read it line by line.
+> It handles credentials; read it before trusting it with anything you would mind losing.
 
 ## Architecture
 
@@ -37,11 +41,12 @@ Secrets go to `security` on stdin (hex-encoded via `security -i`), never on a co
 ### When it switches accounts
 
 Every account gets a score:
-- **Active 5h window:** unused % ÷ hours until reset, so capacity that's about to expire is used first.
+- **Active 5h window:** unused % (up to the account's session cap) ÷ hours until reset, so capacity that's about to expire is used first.
 - **No active window:** a flat 10.
-- **Weekly pacing:** the score is multiplied by how far the account is behind an even 100 %/7 per day.
+- **Weekly pacing:** the score is multiplied by how far the account is behind an even 100 %/7 per day (unused weekly % ÷ days until reset, up to `weekly_factor_max`, default 50×). An account with lots left shortly before its weekly reset is therefore drained first.
 - **Primary account:** its score is also multiplied by 1.2.
 - **Excluded:** an account at ≥ 95 % of its session, ≥ 98 % of its week, rate-limited, or with a dead login.
+- **Reserving capacity:** `account_caps` in `config.json` lowers those caps per account, e.g. `{"main": {"session": 80, "weekly": 90}}` keeps 20 % of each 5h window and 10 % of the week on `main` for the chat app.
 
 The proxy stays on the current account unless another one scores **1.5× higher** and at least **15 minutes** have passed since the last switch. A full account is left immediately. This avoids flip-flopping because each switch loses the prompt cache.
 
@@ -80,14 +85,38 @@ Instead of starting sessions with `run`, you can make every Claude Code session 
 - **claude.ai chat** (desktop or web) can never be routed. It still counts toward the same 5h/weekly limits, and the proxy sees that through its usage checks.
 - **To undo it,** delete the `env` block, or restore `~/.claude/settings.json.bak-rotator`.
 
-When it works, install it as a background service:
+### Background service and menu bar app
 
 ```bash
-python3 claude_rotator.py launchd > ~/Library/LaunchAgents/com.user.claude-rotator.plist
-launchctl load ~/Library/LaunchAgents/com.user.claude-rotator.plist
+python3 claude_rotator.py install          # proxy + menu bar app, both start at every login
+python3 claude_rotator.py install --no-menubar
+python3 claude_rotator.py uninstall        # removes both (credentials and config are kept)
 ```
 
-Optional: `sudo pmset repeat wakeorpoweron MTWRFSU 06:58:00` wakes the Mac in time for the 07:00 ping.
+`install` sets up two LaunchAgents in `~/Library/LaunchAgents`:
+
+| Agent | What it runs | Restarts |
+|---|---|---|
+| `com.user.claude-rotator` | `claude_rotator.py serve`, logging to `~/.claude-rotator/serve.log` | always (`KeepAlive`) |
+| `com.user.claude-rotator.bar` | `~/Applications/Claude Rotator.app` | only after a crash; choosing **Quit** keeps it closed until the next login |
+
+Both start whenever you log in, so after every restart of the Mac. Re-run `install` after moving the repository or updating Python, because the agent stores the absolute paths.
+
+**Sleep and wake.** Sleep pauses both processes and wake resumes them; nothing needs relaunching. On wake:
+- `serve` notices the gap and fetches fresh usage straight away, retrying every minute until the network is back.
+- The menu bar app redraws at once.
+
+If the 07:00 ping falls while the Mac is asleep, it runs on wake, up to 09:00. To have the Mac awake for it:
+
+```bash
+sudo pmset repeat wakeorpoweron MTWRFSU 06:58:00
+```
+
+**Menu bar app.** This is a SwiftUI `MenuBarExtra` compiled locally by `install` from [`menubar/ClaudeRotatorBar.swift`](menubar/ClaudeRotatorBar.swift). It needs the Xcode command line tools (`xcode-select --install`), uses only Apple frameworks, and is signed ad hoc.
+- **Menu bar:** shows the active account and its 5-hour usage (e.g. `work 12%`), or ⚠ `off` when the proxy isn't running.
+- **Panel:** shows each account's 5-hour and weekly bars with reset times, the primary tag, request counts, rate-limit and dead-login warnings, and the next ping time.
+- **Buttons:** Ping now, Restart (the service), Log, Folder (`~/.claude-rotator`) and Quit.
+- **Credentials:** the app never reads them. It only reads `~/.claude-rotator/state.json` and calls `launchctl` and the script.
 
 ### Using it on another machine
 
@@ -97,6 +126,7 @@ Nothing personal lives in this repository. Credentials, account names and usage 
 git clone <your repo URL> && cd <repo>
 python3 claude_rotator.py add work --primary
 python3 claude_rotator.py add main
+python3 claude_rotator.py install
 ```
 
 Each `add` creates a separate login session for that machine, so two machines never share or invalidate each other's refresh tokens. Revoking one machine's login doesn't affect the others. The tool needs macOS for Keychain storage; on Linux it falls back to a chmod-600 `~/.claude-rotator/tokens.json`.

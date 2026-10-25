@@ -6,7 +6,7 @@
   serve                 local proxy that picks the account per request + 07:00 ping
   run [-- ARGS]         exec `claude ARGS` through the proxy
   prime [--account N]   ping now (default: least-used account without an active window)
-  launchd               print a macOS LaunchAgent plist that keeps `serve` running
+  install / uninstall   start `serve` + the menu bar app at every login (macOS LaunchAgents)
 
 How credentials work: `add` runs Claude Code once in a throwaway config dir so you can
 /login as the account. The resulting OAuth credential (access + refresh token) is moved
@@ -26,6 +26,7 @@ import hashlib
 import http.client
 import json
 import os
+import plistlib
 import shutil
 import socket
 import subprocess
@@ -68,6 +69,8 @@ DEFAULTS = {
     "proxy_port": 8789,
     "session_cap": 95.0,  # % of 5h window at which an account is considered full
     "weekly_cap": 98.0,  # % of weekly limit at which an account is considered full
+    "account_caps": {},  # per-account overrides, e.g. {"main": {"session": 80, "weekly": 90}}
+    "weekly_factor_max": 50.0,  # upper bound on the weekly "use it before reset" boost
     "primary_bias": 1.2,  # primary's score is multiplied by this
     "switch_ratio": 1.5,  # only leave the current account if another scores this much higher...
     "min_dwell_s": 900,  # ...and we've been on the current one at least this long (prompt cache)
@@ -338,6 +341,15 @@ def probe(name: str, cfg: dict) -> Usage:
     return usage_from_payload(name, data)
 
 
+def usage_to_json(u: Usage) -> dict:
+    """Usage with ISO timestamps (seconds precision), as read by `status` and the menu bar app."""
+    d = asdict(u)
+    for k in ("session_reset", "weekly_reset"):
+        if d[k] is not None:
+            d[k] = d[k].isoformat(timespec="seconds")
+    return d
+
+
 def usage_from_payload(name: str, data: dict) -> Usage:
     five = data.get("five_hour") or {}
     week = data.get("seven_day") or {}
@@ -382,37 +394,44 @@ def usage_from_headers(name: str, headers: dict[str, str], prev: Usage | None) -
 
 # --------------------------------------------------------------------------- selection policy
 
+def caps(name: str, cfg: dict) -> tuple[float, float]:
+    """(session_cap, weekly_cap) for an account; lower caps reserve capacity for other use."""
+    own = cfg["account_caps"].get(name, {})
+    return own.get("session", cfg["session_cap"]), own.get("weekly", cfg["weekly_cap"])
+
+
 def score(u: Usage, cfg: dict) -> float | None:
     """Higher = use this account first. None = not usable right now.
 
     "Use it or lose it": an active 5h window with lots of headroom and little time left is
     the most urgent capacity to burn. An idle account scores a flat 10 (using it opens a
     fresh window). Weekly pacing scales everything: ahead of an even 100%/7 per day is
-    damped, behind it is boosted.
+    damped, behind it is boosted. Headroom is measured up to the account's own caps.
     """
     if u.error:
         return None
+    s_cap, w_cap = caps(u.name, cfg)
     s_pct, w_pct = u.session_pct or 0.0, u.weekly_pct or 0.0
-    if w_pct >= cfg["weekly_cap"]:
+    if w_pct >= w_cap:
         return None
     if u.window_active:
-        if s_pct >= cfg["session_cap"]:
+        if s_pct >= s_cap:
             return None
         hours_left = max((u.session_reset - now()).total_seconds() / 3600, 0.25)
-        session_urgency = (100 - s_pct) / hours_left
+        session_urgency = (s_cap - s_pct) / hours_left
     else:
         session_urgency = 10.0
 
     if u.weekly_reset and u.weekly_reset > now():
         days_left = max((u.weekly_reset - now()).total_seconds() / 86400, 0.1)
-        weekly_factor = min(2.0, ((100 - w_pct) / days_left) / (100 / 7))
+        weekly_factor = min(cfg["weekly_factor_max"], ((w_cap - w_pct) / days_left) / (100 / 7))
     else:
         weekly_factor = 1.0
     return session_urgency * weekly_factor
 
 
 def least_used(usages: list[Usage], cfg: dict) -> Usage | None:
-    ok = [u for u in usages if not u.error and (u.weekly_pct or 0) < cfg["weekly_cap"]]
+    ok = [u for u in usages if not u.error and (u.weekly_pct or 0) < caps(u.name, cfg)[1]]
     return min(ok, key=lambda u: (u.weekly_pct or 0, u.session_pct or 0), default=None)
 
 
@@ -431,6 +450,8 @@ class Router:
         self.dead: dict[str, str] = {}
         self.current: str | None = cfg["primary"]
         self.switched_at = 0.0
+        self.requests: dict[str, int] = {}
+        self.last_request_at: str | None = None
 
     def usable(self, name: str) -> bool:
         return name not in self.dead and self.blocked_until.get(name, 0) <= time.time()
@@ -473,6 +494,8 @@ class Router:
 
     def observe(self, name: str, status: int, headers: dict[str, str]) -> None:
         with self.lock:
+            self.requests[name] = self.requests.get(name, 0) + 1
+            self.last_request_at = now().isoformat(timespec="seconds")
             u = usage_from_headers(name, headers, self.usages.get(name))
             if u:
                 self.usages[name] = u
@@ -497,10 +520,12 @@ class Router:
         with self.lock:
             return {
                 "current": self.current,
-                "usages": {n: asdict(u) for n, u in self.usages.items()},
+                "usages": {n: usage_to_json(u) for n, u in self.usages.items()},
                 "blocked_until": dict(self.blocked_until),
                 "dead": dict(self.dead),
-                "updated_at": now().isoformat(),
+                "requests": dict(self.requests),
+                "last_request_at": self.last_request_at,
+                "updated_at": now().isoformat(timespec="seconds"),
             }
 
 
@@ -659,12 +684,28 @@ def run_schedule(cfg: dict, usages: list[Usage], state: dict) -> None:
             log(f"{at} ping {target.name}: {'ok' if ok else 'FAILED'} {msg!r}")
 
 
+def next_ping_text(cfg: dict, state: dict) -> str | None:
+    """Human-readable time of the next scheduled ping, e.g. 'tomorrow 07:00'."""
+    local, done = datetime.now(), state.get("schedule_done", {})
+    upcoming = []
+    for at in cfg["schedule"]:
+        hh, mm = map(int, at.split(":"))
+        due = local.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        if done.get(at) == local.date().isoformat() or local >= due + timedelta(minutes=cfg["schedule_grace_min"]):
+            due += timedelta(days=1)
+        upcoming.append(due)
+    if not upcoming:
+        return None
+    nxt = min(upcoming)
+    return f"{'today' if nxt.date() == local.date() else 'tomorrow'} {nxt:%H:%M}"
+
+
 def run_auto_prime(cfg: dict, usages: list[Usage], state: dict) -> None:
     if not cfg["auto_prime"] or in_quiet_hours(cfg):
         return
     last = state.setdefault("last_prime", {})
     for u in usages:
-        if u.error or u.window_active or (u.weekly_pct or 0) >= cfg["weekly_cap"]:
+        if u.error or u.window_active or (u.weekly_pct or 0) >= caps(u.name, cfg)[1]:
             continue
         if time.time() - last.get(u.name, 0) < cfg["prime_cooldown_s"]:
             continue
@@ -703,6 +744,9 @@ def print_table(usages: list[Usage], cfg: dict, current: str | None = None,
         info = cfg["emails"].get(u.name) or ""
         if u.name == cfg["primary"]:
             info += " (primary)"
+        if u.name in cfg["account_caps"]:
+            s_cap, w_cap = caps(u.name, cfg)
+            info += f" (caps {s_cap:.0f}%/{w_cap:.0f}%)"
         if u.name in router.dead or u.error:
             print(f"{mark} {u.name:<12}  error: {router.dead.get(u.name) or u.error}")
             continue
@@ -762,6 +806,11 @@ def cmd_remove(args, cfg):
 
 
 def cmd_status(args, cfg):
+    installed = installed_script()
+    if installed and installed != str(Path(__file__).resolve()):
+        missing = "" if Path(installed).exists() else " (that file no longer exists)"
+        print(f"warning: the background service runs {installed}{missing}; "
+              f"run `install` again from this folder to update it\n")
     state = load_json(STATE_FILE, {})
     if proxy_running(cfg) and state.get("usages"):
         usages = [Usage(**{**u, "session_reset": parse_ts(u["session_reset"]),
@@ -781,28 +830,45 @@ def cmd_serve(args, cfg):
     ProxyHandler.router = router
     ProxyHandler.upstream = urllib.parse.urlsplit(cfg["upstream"])
     ProxyHandler.debug = args.debug
-    server = ThreadingHTTPServer(("127.0.0.1", cfg["proxy_port"]), ProxyHandler)
+    try:
+        server = ThreadingHTTPServer(("127.0.0.1", cfg["proxy_port"]), ProxyHandler)
+    except OSError as e:
+        sys.exit(f"cannot listen on 127.0.0.1:{cfg['proxy_port']} ({e}); is another `serve` running?")
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     log(f"proxy on http://127.0.0.1:{cfg['proxy_port']} -> {cfg['upstream']}, "
         f"accounts {cfg['accounts']}, primary {cfg['primary']}")
 
     state = load_json(STATE_FILE, {})
+    state.update(pid=os.getpid(), started_at=now().isoformat(timespec="seconds"),
+                 python=sys.executable, script=str(Path(__file__).resolve()))
     last_probe = 0.0
+    last_tick = time.time()
     while True:
+        gap = time.time() - last_tick
+        if gap > max(4 * args.tick, 120):  # the loop was frozen: the Mac slept
+            log(f"resumed after {gap / 60:.0f} min (sleep/wake), refreshing usage")
+            last_probe = 0.0
+        last_tick = time.time()
+
         if time.time() - last_probe >= cfg["probe_interval_s"]:
+            transient_error = False
             for a in cfg["accounts"]:
                 u = probe(a, cfg)
                 if u.source == "dead":
                     router.mark_dead(a, u.error)
                 elif u.error:
+                    transient_error = True
                     log(f"probe {a}: {u.error}")
                 router.merge_probe(u)
             last_probe = time.time()
+            if transient_error:  # e.g. Wi-Fi not back yet after wake: retry in a minute
+                last_probe -= max(cfg["probe_interval_s"] - 60, 0)
         usages = [router.usages[a] for a in cfg["accounts"] if a not in router.dead]
         run_schedule(cfg, usages, state)
         run_auto_prime(cfg, usages, state)
-        state.update(router.snapshot())
+        state.update(router.snapshot(), accounts=cfg["accounts"], primary=cfg["primary"],
+                     emails=cfg["emails"], next_ping=next_ping_text(cfg, state))
         save_json(STATE_FILE, state)
         time.sleep(args.tick)
 
@@ -838,26 +904,114 @@ def cmd_prime(args, cfg):
     print(f"{name}: {'ok' if ok else 'FAILED'} {msg}")
 
 
-def cmd_launchd(args, cfg):
-    script = Path(__file__).resolve()
-    path = os.environ.get("PATH", "/usr/bin:/bin")
-    print(f"""<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>com.user.claude-rotator</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>{sys.executable}</string>
-    <string>{script}</string>
-    <string>serve</string>
-  </array>
-  <key>EnvironmentVariables</key><dict><key>PATH</key><string>{path}</string></dict>
-  <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
-  <key>StandardErrorPath</key><string>{HOME / 'serve.log'}</string>
-</dict>
-</plist>""")
+SERVE_LABEL = "com.user.claude-rotator"
+BAR_LABEL = "com.user.claude-rotator.bar"
+AGENTS_DIR = Path.home() / "Library" / "LaunchAgents"
+APP_DIR = Path.home() / "Applications" / "Claude Rotator.app"
+APP_EXE = APP_DIR / "Contents" / "MacOS" / "ClaudeRotatorBar"
+SWIFT_SRC = Path(__file__).resolve().parent / "menubar" / "ClaudeRotatorBar.swift"
+
+
+def build_app() -> None:
+    """Compile the SwiftUI menu bar app into ~/Applications (needs Xcode command line tools)."""
+    if shutil.which("xcrun") is None:
+        sys.exit("xcrun not found; install the command line tools with `xcode-select --install`")
+    APP_EXE.parent.mkdir(parents=True, exist_ok=True)
+    with open(APP_DIR / "Contents" / "Info.plist", "wb") as f:
+        plistlib.dump({
+            "CFBundleName": "Claude Rotator",
+            "CFBundleIdentifier": BAR_LABEL,
+            "CFBundleExecutable": APP_EXE.name,
+            "CFBundlePackageType": "APPL",
+            "CFBundleShortVersionString": "0.3",
+            "LSMinimumSystemVersion": "13.0",
+            "LSUIElement": True,  # menu bar only, no Dock icon
+        }, f)
+    subprocess.run(["xcrun", "swiftc", "-parse-as-library", "-swift-version", "5", "-O",
+                    "-target", f"{os.uname().machine}-apple-macos13", "-o", str(APP_EXE), str(SWIFT_SRC)],
+                   check=True)
+    subprocess.run(["codesign", "--force", "--sign", "-", str(APP_DIR)], check=True, capture_output=True)
+
+
+def agent_plist(label: str, program: list[str], keep_alive, log_file: Path | None) -> dict:
+    # launchd starts agents with a minimal PATH; keep the user's so `claude` is found for pings.
+    path = ":".join(dict.fromkeys(os.environ.get("PATH", "").split(":") +
+                                  ["/opt/homebrew/bin", "/usr/local/bin", str(Path.home() / ".local/bin"),
+                                   "/usr/bin", "/bin", "/usr/sbin", "/sbin"]))
+    plist = {
+        "Label": label,
+        "ProgramArguments": program,
+        "EnvironmentVariables": {"PATH": path},
+        "RunAtLoad": True,  # every login, i.e. after each restart of the Mac
+        "KeepAlive": keep_alive,
+        "ThrottleInterval": 10,
+        "LimitLoadToSessionType": "Aqua",
+    }
+    if log_file:
+        plist["StandardOutPath"] = plist["StandardErrorPath"] = str(log_file)
+    return plist
+
+
+def launchctl_reload(label: str, plist_path: Path) -> None:
+    domain = f"gui/{os.getuid()}"
+    subprocess.run(["launchctl", "bootout", f"{domain}/{label}"], capture_output=True)
+    # bootout returns before the old job is gone; bootstrapping too early fails with error 5.
+    for _ in range(20):
+        if subprocess.run(["launchctl", "print", f"{domain}/{label}"], capture_output=True).returncode != 0:
+            break
+        time.sleep(0.25)
+    for attempt in range(3):
+        out = subprocess.run(["launchctl", "bootstrap", domain, str(plist_path)], capture_output=True, text=True)
+        if out.returncode == 0:
+            return
+        time.sleep(1)
+    sys.exit(f"launchctl bootstrap {label} failed: {out.stderr.strip()}")
+
+
+def installed_script() -> str | None:
+    """The script path the installed LaunchAgent runs, if any."""
+    try:
+        with open(AGENTS_DIR / f"{SERVE_LABEL}.plist", "rb") as f:
+            args = plistlib.load(f).get("ProgramArguments", [])
+    except (FileNotFoundError, plistlib.InvalidFileException):
+        return None
+    return args[1] if len(args) > 1 else None
+
+
+def cmd_install(args, cfg):
+    if sys.platform != "darwin":
+        sys.exit("install is macOS-only; run `serve` under systemd or similar elsewhere")
+    if not cfg["accounts"]:
+        sys.exit("no accounts configured; run `add` first")
+    agents = {SERVE_LABEL: agent_plist(SERVE_LABEL, [sys.executable, str(Path(__file__).resolve()), "serve"],
+                                       True, HOME / "serve.log")}
+    if not args.no_menubar:
+        print("building the menu bar app…")
+        build_app()
+        # Restart only if it crashed; choosing Quit keeps it closed until the next login.
+        agents[BAR_LABEL] = agent_plist(BAR_LABEL, [str(APP_EXE)], {"SuccessfulExit": False}, None)
+    if proxy_running(cfg):
+        subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{SERVE_LABEL}"], capture_output=True)
+        time.sleep(1)
+        if proxy_running(cfg):
+            sys.exit(f"port {cfg['proxy_port']} is in use; stop the `serve` you started by hand first")
+    AGENTS_DIR.mkdir(parents=True, exist_ok=True)
+    for label, plist in agents.items():
+        path = AGENTS_DIR / f"{label}.plist"
+        with open(path, "wb") as f:
+            plistlib.dump(plist, f)
+        launchctl_reload(label, path)
+        print(f"loaded {path}")
+    print("installed: the proxy and menu bar app now start at every login.")
+
+
+def cmd_uninstall(args, cfg):
+    for label in (BAR_LABEL, SERVE_LABEL):
+        subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{label}"], capture_output=True)
+        (AGENTS_DIR / f"{label}.plist").unlink(missing_ok=True)
+    shutil.rmtree(APP_DIR, ignore_errors=True)
+    print("removed the LaunchAgents and the menu bar app (credentials and config are kept;"
+          " use `remove NAME` to delete an account)")
 
 
 def main(argv=None):
@@ -882,7 +1036,10 @@ def main(argv=None):
     pr = sub.add_parser("prime")
     pr.add_argument("--account")
     pr.set_defaults(fn=cmd_prime)
-    sub.add_parser("launchd").set_defaults(fn=cmd_launchd)
+    ins = sub.add_parser("install")
+    ins.add_argument("--no-menubar", action="store_true", help="only install the background service")
+    ins.set_defaults(fn=cmd_install)
+    sub.add_parser("uninstall").set_defaults(fn=cmd_uninstall)
     args = p.parse_args(argv)
     args.fn(args, load_config())
 

@@ -113,3 +113,16 @@ def test_other_clients_are_not_claimed(setup):
 def test_science_is_off_unless_enabled():
     addons._loaded = None
     assert addons.load() == {}
+
+
+def test_install_enables_science_only_if_found_and_unset(monkeypatch):
+    from claude_roulette import cli, science
+    CONFIG_FILE.unlink(missing_ok=True)
+    monkeypatch.setattr(science, "app_installed", lambda: False)
+    assert cli.enable_detected_addons() is None and not CONFIG_FILE.exists()
+    monkeypatch.setattr(science, "app_installed", lambda: True)
+    assert cli.enable_detected_addons()
+    assert json.loads(CONFIG_FILE.read_text())["addons"] == ["science"]
+    save_json(CONFIG_FILE, {"addons": []})  # turned off by hand: stays off
+    assert cli.enable_detected_addons() is None
+    CONFIG_FILE.unlink()

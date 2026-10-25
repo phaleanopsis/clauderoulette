@@ -1,6 +1,6 @@
 """Add-on for Claude Science: tell the core which conversation a request is.
 
-Off unless config.json has `"addons": ["science"]`.
+Off unless config.json has `"addons": ["science"]`; `install` sets that when Claude Science is installed.
 
 The core (claude_roulette.conversations) keeps each conversation on one account, places
 new ones by load and asks before moving a warm one. This add-on only recognises Science's
@@ -10,18 +10,24 @@ requests and reads their conversation id.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from .addons import Route
 from .conversations import Conversation
 from .router import Router
 
 SURFACE = "operon"  # X-Anthropic-Surface sent by Claude Science
+APP = "Claude Science.app"
 
 DEFAULTS = {
     # "pin" keeps each conversation on one account; "observe" passes it through on
     # Science's own login (the core still logs its conversation id and token counts).
     "science_mode": "pin",
 }
+
+
+def app_installed() -> bool:
+    return any((d / APP).exists() for d in (Path("/Applications"), Path.home() / "Applications"))
 
 
 def science_conversation(headers, body: bytes) -> Conversation | None:

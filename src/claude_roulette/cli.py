@@ -24,8 +24,19 @@ import urllib.parse
 from datetime import datetime
 from http.server import ThreadingHTTPServer
 
-from . import __version__, addons, client_settings, measure, service
-from .config import HOME, LOGIN_DIR, STATE_FILE, TOKENS_FILE, load_config, load_json, log, save_config_keys, save_json
+from . import __version__, addons, client_settings, measure, science, service
+from .config import (
+    CONFIG_FILE,
+    HOME,
+    LOGIN_DIR,
+    STATE_FILE,
+    TOKENS_FILE,
+    load_config,
+    load_json,
+    log,
+    save_config_keys,
+    save_json,
+)
 from .conversations import ConversationPins, status_lines
 from .credentials import KEYCHAIN_SERVICE, _has_keychain, import_login, kc_delete
 from .priming import claude_env, next_ping_text, prime_account, run_auto_prime, run_schedule
@@ -235,11 +246,21 @@ def cmd_prime(args, cfg):
     print(f"{name}: {'ok' if ok else 'FAILED'} {msg}")
 
 
+def enable_detected_addons() -> str | None:
+    """Turn on the Science add-on if Claude Science is installed and `addons` was never set."""
+    if "addons" in load_json(CONFIG_FILE, {}) or not science.app_installed():
+        return None
+    save_config_keys(addons=["science"])
+    return 'found Claude Science: enabled the science add-on (set "addons": [] in config.json to turn it off)'
+
+
 def cmd_install(args, cfg):
     if sys.platform != "darwin":
         sys.exit("install is macOS-only; run `serve` under systemd or similar elsewhere")
     if not cfg["accounts"]:
         sys.exit("no accounts configured; run `add` first")
+    if line := enable_detected_addons():  # before the service starts, which reads config.json once
+        print(line)
     agents = {service.SERVE_LABEL: service.agent_plist(
         service.SERVE_LABEL, [*service.cli_command(), "serve"], True, HOME / "serve.log")}
     if not args.no_menubar:

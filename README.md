@@ -63,7 +63,7 @@ That's it: every new `claude` session in the terminal or VS Code now goes throug
 | Claude Code in VS Code, Cursor, VSCodium | ✅ |
 | Claude desktop app, Code tab | ❌ (ignores `ANTHROPIC_BASE_URL`) |
 | claude.ai chat (web or desktop) | ❌ (still counted: the proxy sees its usage) |
-| Claude Science | ✅ once enabled with `"addons": ["science"]` (see [Configuration](#configuration)) |
+| Claude Science | ✅ (`install` turns this on when Claude Science is installed) |
 
 Shells opened from the Claude desktop app inherit their own `ANTHROPIC_BASE_URL`, so plain `claude` there goes direct. Use `claude-roulette run` instead.
 
@@ -75,7 +75,7 @@ The ones you're most likely to change:
 
 | Key | Default | What it does |
 |---|---|---|
-| `addons` | `[]` | Optional add-ons to turn on: `["science"]` routes [Claude Science](#details) too |
+| `addons` | `[]` | Optional add-ons. `install` adds `"science"` (routes [Claude Science](#details)) if Claude Science is installed and you haven't set this key; `[]` turns it off |
 | `account_caps` | `{}` | Keep capacity free on an account, e.g. for the chat app: `{"personal": {"session": 80, "weekly": 90}}` |
 | `primary_bias` | `1.2` | How strongly the `--primary` account is preferred |
 | `schedule` | `["07:00"]` | Times to send the morning ping (`[]` turns it off) |
@@ -181,7 +181,7 @@ After sleep, the proxy fetches fresh usage straight away. A 07:00 ping missed wh
 <details>
 <summary><b>Claude Science</b></summary>
 
-Claude Science requests are recognised by `X-Anthropic-Surface: operon`, and the conversation id is read from `metadata.user_id` (`session_id = <root>[:<frame>][:<lane>]`). With `"addons": ["science"]`, every request of a conversation (main agent, frames, side tasks such as the title generator) is pinned to one account, exactly like a Claude Code session. `status` lists Science conversations with all others.
+Claude Science requests are recognised by `X-Anthropic-Surface: operon`, and the conversation id is read from `metadata.user_id` (`session_id = <root>[:<frame>][:<lane>]`). `install` adds `"addons": ["science"]` to `config.json` when it finds `Claude Science.app` and you haven't set `addons` yourself. With it on, every request of a conversation (main agent, frames, side tasks such as the title generator) is pinned to one account, exactly like a Claude Code session. `status` lists Science conversations with all others.
 
 Set `"science_mode": "observe"` to let Science requests through on Science's own login instead; they still show up in `serve.log`. An explicit `claude-roulette run --account` still wins over a pin.
 

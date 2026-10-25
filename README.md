@@ -213,3 +213,7 @@ Verified against Anthropic (2026-10-25, Claude Code 2.1.308): the usage endpoint
 ## Terms of service
 
 Both subscriptions must genuinely be yours. Anthropic has said it acts against limit circumvention and account sharing. Automatic failover between accounts is in that grey zone and could get the accounts flagged. Use it at your own risk.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

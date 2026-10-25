@@ -4,7 +4,10 @@ version = "0.6.0"
 description = "Use several Claude subscriptions from one Claude Code setup via a local proxy"
 readme = "README.md"
 requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Phaleanopsis" }]
+keywords = ["claude", "claude-code", "anthropic", "proxy", "macos"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
@@ -12,6 +15,11 @@ classifiers = [
     "Programming Language :: Python :: 3",
 ]
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/phaleanopsis/clauderoulette"
+Repository = "https://github.com/phaleanopsis/clauderoulette"
+Issues = "https://github.com/phaleanopsis/clauderoulette/issues"
 
 [project.scripts]
 claude-roulette = "claude_roulette.cli:main"

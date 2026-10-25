@@ -24,7 +24,7 @@ import urllib.parse
 from datetime import datetime
 from http.server import ThreadingHTTPServer
 
-from . import __version__, addons, client_settings, measure, science, service
+from . import __version__, addons, client_settings, measure, science, service, wake
 from .config import (
     CONFIG_FILE,
     HOME,
@@ -226,7 +226,11 @@ def cmd_serve(args, cfg):
                      conversations=pins.snapshot(),
                      addons={n: a.snapshot() for n, a in addons.load().items()})
         save_json(STATE_FILE, state)
-        time.sleep(args.tick)
+        # Short naps against the wall clock: after the Mac wakes (e.g. for the morning ping,
+        # which with the lid closed may last under a minute) the loop runs again within seconds.
+        until = time.time() + args.tick
+        while time.time() < until:
+            time.sleep(min(5.0, until - time.time()))
 
 
 def cmd_measure(args, cfg):
@@ -319,12 +323,16 @@ def cmd_install(args, cfg):
                                                 vscode=not args.no_vscode_settings):
         print(line)
     print(connect_science(cfg))
+    if not args.no_wake:
+        print(wake.set_wake(cfg))
     print("installed: the proxy and menu bar app now start at every login.")
 
 
 def cmd_uninstall(args, cfg):
     service.remove_agents()
     for line in client_settings.disconnect_clients(cfg):
+        print(line)
+    if line := wake.clear_wake():
         print(line)
     if science.disconnect_launchd(client_settings.proxy_base(cfg)):
         print(f"launchd: removed {client_settings.PROXY_VAR} (quit and reopen Claude Science to drop it there too)")
@@ -361,6 +369,8 @@ def main(argv=None):
     pr.set_defaults(fn=cmd_prime)
     ins = sub.add_parser("install")
     ins.add_argument("--no-menubar", action="store_true", help="only install the background service")
+    ins.add_argument("--no-wake", action="store_true",
+                     help="don't set a daily pmset wake for the first `schedule` time (needs sudo)")
     ins.add_argument("--no-claude-settings", action="store_true",
                      help=f"don't set env.{client_settings.PROXY_VAR} in ~/.claude/settings.json")
     ins.add_argument("--no-vscode-settings", action="store_true",

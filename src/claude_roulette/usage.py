@@ -128,8 +128,9 @@ def score(u: Usage, cfg: dict) -> float | None:
 
     "Use it or lose it": an active 5h window with lots of headroom and little time left is
     the most urgent capacity to burn. An idle account scores a flat 10 (using it opens a
-    fresh window). Weekly pacing scales everything: ahead of an even 100%/7 per day is
-    damped, behind it is boosted. Headroom is measured up to the account's own caps.
+    fresh window). Weekly pacing scales everything: ahead of an even share of the weekly
+    cap per day (cap/7, e.g. 80%/7 = 11.4% for an account capped at 80%) is damped, behind
+    it is boosted. Headroom is measured up to the account's own caps.
     """
     if u.error:
         return None
@@ -147,7 +148,7 @@ def score(u: Usage, cfg: dict) -> float | None:
 
     if u.weekly_reset and u.weekly_reset > now():
         days_left = max((u.weekly_reset - now()).total_seconds() / 86400, 0.1)
-        weekly_factor = min(cfg["weekly_factor_max"], ((w_cap - w_pct) / days_left) / (100 / 7))
+        weekly_factor = min(cfg["weekly_factor_max"], ((w_cap - w_pct) / days_left) / (w_cap / 7))
     else:
         weekly_factor = 1.0
     return session_urgency * weekly_factor

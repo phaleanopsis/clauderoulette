@@ -91,7 +91,7 @@ All keys and their defaults are in [`config.py`](src/claude_roulette/config.py).
 |---|---|
 | `add NAME [--primary]` / `remove NAME` | add or remove an account |
 | `status` | usage per account and recent conversations |
-| `install [--no-menubar] [--no-claude-settings] [--no-vscode-settings]` / `uninstall` | background service, menu bar app, client settings |
+| `install [--no-menubar] [--no-claude-settings] [--no-vscode-settings] [--no-wake]` / `uninstall` | background service, menu bar app, client settings |
 | `run [--account NAME]` | start `claude` through the proxy, optionally forced onto one account |
 | `prime [--account NAME]` | send the morning ping now |
 | `serve --debug` | run the proxy in the foreground |
@@ -106,7 +106,7 @@ Every account gets a score:
 
 - **Active 5h window:** unused % ÷ hours until reset, so capacity that's about to expire is used first.
 - **No active window:** a flat 10.
-- **Weekly pacing:** multiplied by how far the account is behind an even pace through its week (up to `weekly_factor_max`, 50×). An account with lots left just before its weekly reset is drained first.
+- **Weekly pacing:** multiplied by how far the account is behind an even pace through its week (its weekly cap ÷ 7 per day, so 11.4 %/day for an account capped at 80 %) (up to `weekly_factor_max`, 50×). An account with lots left just before its weekly reset is drained first.
 - **Primary:** multiplied by `primary_bias`.
 - **Excluded:** at ≥ 95 % of its 5h window, ≥ 98 % of its week, rate-limited, or with an expired login.
 
@@ -159,6 +159,7 @@ Each machine gets its own logins, so two machines never invalidate each other's.
 - **LaunchAgents** in `~/Library/LaunchAgents`: `com.user.claude-roulette` (the proxy, always restarted) and `com.user.claude-roulette.bar` (the menu bar app). Both start at login.
 - **`~/.claude/settings.json`:** adds `"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:8789/k/<key>"}` and makes the file readable by you only.
 - **VS Code user settings** (and Insiders, Cursor, VSCodium if present): adds the same variable to `claudeCode.environmentVariables`.
+- **A daily pmset wake** at the earliest `schedule` time, if you have no repeating power events of your own (see below; `--no-wake` skips it).
 - **launchd's environment** (only with the Science add-on on): `launchctl setenv ANTHROPIC_BASE_URL …`, for [Claude Science](#details). Every app opened afterwards inherits it, so the proxy also sees requests from other apps and shells. Those without a claude.ai login (e.g. an API key) are passed through untouched.
 
 In the files, only that one key changes; comments and formatting are kept. The original is backed up as `settings.json.bak-roulette`. Files that can't be parsed are skipped and reported. `uninstall` removes the entries if they still point at this proxy.
@@ -169,7 +170,7 @@ In the files, only that one key changes; comments and formatting are kept. The o
 
 `install` records the path of the Python that ran it, so re-run `install` after reinstalling the tool.
 
-After sleep, the proxy fetches fresh usage straight away. A 07:00 ping missed while asleep runs on wake, up to 09:00. To wake the Mac for it: `sudo pmset repeat wakeorpoweron MTWRFSU 06:58:00`.
+After sleep, the proxy fetches fresh usage straight away. A 07:00 ping missed while asleep runs on wake, up to 09:00. To make sure the Mac is awake for it, `install` sets a daily wake at the earliest `schedule` time (`sudo pmset repeat wakeorpoweron MTWRFSU 07:00:00`; sudo asks for your password; skip with `--no-wake`). macOS allows only one repeating wake, so if you already have your own repeating power events, `install` leaves them alone and prints the command instead. `uninstall` removes the wake if it's still the one `install` set. With the lid closed, a MacBook wakes only briefly without turning the display on; the ping runs under `caffeinate` to finish, which holds the Mac awake only on AC power.
 </details>
 
 <details>

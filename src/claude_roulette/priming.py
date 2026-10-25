@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import tempfile
 import time
@@ -31,6 +32,8 @@ def prime_account(name: str, cfg: dict) -> tuple[bool, str]:
     ensure_home()
     PRIME_CWD.mkdir(parents=True, exist_ok=True)
     cmd = [cfg["claude_bin"], "-p", cfg["prime_prompt"], "--model", cfg["prime_model"]]
+    if shutil.which("caffeinate"):  # keep the Mac awake until it's sent (on AC power even with the lid closed)
+        cmd = ["caffeinate", "-i", "-s", *cmd]
     try:
         with tempfile.TemporaryDirectory(prefix="prime-config-", dir=HOME) as config_dir:
             env = claude_env(CLAUDE_CODE_OAUTH_TOKEN=access_token(name), CLAUDE_CONFIG_DIR=config_dir)

@@ -30,6 +30,14 @@ def test_expiring_capacity_scores_higher():
     assert soon > later
 
 
+def test_weekly_pace_is_relative_to_each_accounts_cap():
+    cfg = {**CFG, "weekly_cap": 100.0, "account_caps": {"a": {"weekly": 80}}}
+    # one day into the week, each exactly on its own pace: a at 80/7 %, b at 100/7 %
+    a, b = usage("a", 0, 5, 80 / 7, 6), usage("b", 0, 5, 100 / 7, 6)
+    a.session_pct = b.session_pct = None  # same session urgency for both
+    assert abs(score(a, cfg) - score(b, cfg)) < 1e-6
+
+
 def test_least_used_prefers_lower_weekly():
     assert least_used([usage("a", 0, 1, 50, 3), usage("b", 90, 1, 20, 3)], CFG).name == "b"
 

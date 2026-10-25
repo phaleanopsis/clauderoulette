@@ -1,4 +1,6 @@
 import stat
+import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -99,3 +101,24 @@ def test_run_refuses_a_port_held_by_something_else(monkeypatch):
     monkeypatch.setattr(cli, "proxy_status", lambda cfg: "other")
     with pytest.raises(SystemExit, match="something other than the claude-roulette proxy"):
         cli.main(["run"])
+
+
+def test_ping_runs_without_the_users_claude_config(monkeypatch):
+    from claude_roulette import priming
+
+    seen = {}
+
+    def fake_run(cmd, env, cwd, **kw):
+        seen.update(env=env, config_dir_contents=list(Path(env["CLAUDE_CONFIG_DIR"]).iterdir()))
+        return subprocess.CompletedProcess(cmd, 0, "hello", "")
+
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude"))
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "http://127.0.0.1:1/k/x")
+    monkeypatch.setattr(priming, "access_token", lambda name: "tok")
+    monkeypatch.setattr(priming.subprocess, "run", fake_run)
+    assert priming.prime_account("work", config.DEFAULTS) == (True, "hello")
+    env = seen["env"]
+    config_dir = Path(env["CLAUDE_CONFIG_DIR"])
+    assert config_dir.parent == config.HOME and seen["config_dir_contents"] == []
+    assert not config_dir.exists()  # removed afterwards
+    assert "ANTHROPIC_BASE_URL" not in env and env["CLAUDE_CODE_OAUTH_TOKEN"] == "tok"

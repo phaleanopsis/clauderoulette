@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import os
 import subprocess
+import tempfile
 import time
 from datetime import datetime, timedelta
 
-from .config import PRIME_CWD, log
+from .config import HOME, PRIME_CWD, ensure_home, log
 from .credentials import AuthDead, access_token
 from .usage import Usage, caps, least_used
 
@@ -21,12 +22,19 @@ def claude_env(**extra) -> dict:
 
 
 def prime_account(name: str, cfg: dict) -> tuple[bool, str]:
-    """One tiny Haiku prompt, sent by Claude Code itself with that account's access token."""
+    """One tiny Haiku prompt, sent by Claude Code itself with that account's access token.
+
+    It runs with a fresh, empty CLAUDE_CONFIG_DIR: with ~/.claude it would load your hooks,
+    MCP servers and plugins, which inherit the token from its environment, and the proxy's
+    ANTHROPIC_BASE_URL, which could send the ping on another account.
+    """
+    ensure_home()
     PRIME_CWD.mkdir(parents=True, exist_ok=True)
     cmd = [cfg["claude_bin"], "-p", cfg["prime_prompt"], "--model", cfg["prime_model"]]
     try:
-        env = claude_env(CLAUDE_CODE_OAUTH_TOKEN=access_token(name))
-        out = subprocess.run(cmd, env=env, cwd=PRIME_CWD, capture_output=True, text=True, timeout=120)
+        with tempfile.TemporaryDirectory(prefix="prime-config-", dir=HOME) as config_dir:
+            env = claude_env(CLAUDE_CODE_OAUTH_TOKEN=access_token(name), CLAUDE_CONFIG_DIR=config_dir)
+            out = subprocess.run(cmd, env=env, cwd=PRIME_CWD, capture_output=True, text=True, timeout=120)
     except (subprocess.TimeoutExpired, FileNotFoundError, AuthDead, OSError) as e:
         return False, str(e)
     return out.returncode == 0, (out.stdout or out.stderr).strip()[:200]

@@ -44,7 +44,7 @@ from .config import (
 from .conversations import ConversationPins, status_lines
 from .credentials import KEYCHAIN_SERVICE, _has_keychain, import_login, kc_delete
 from .priming import claude_env, next_ping_text, prime_account, run_auto_prime, run_schedule
-from .proxy import FORCE_HEADER, ProxyHandler, port_taken, proxy_status
+from .proxy import FORCE_HEADER, KEY_PREFIX, ProxyHandler, port_taken, proxy_status
 from .router import Router
 from .usage import Usage, caps, least_used, now, parse_ts, probe
 
@@ -146,6 +146,9 @@ def cmd_status(args, cfg):
     proxy = proxy_status(cfg)
     if proxy == "other":
         print(f"warning: {port_taken(cfg)}\n")
+    if "science" in addons.load() and (
+            warning := science.daemon_warning(client_settings.proxy_url(cfg), client_settings.proxy_base(cfg))):
+        print(f"warning: {warning}\n")
     if proxy == "ours" and state.get("usages"):
         usages = [Usage(**{**u, "session_reset": parse_ts(u["session_reset"]),
                            "weekly_reset": parse_ts(u["weekly_reset"])})
@@ -184,6 +187,11 @@ def cmd_serve(args, cfg):
     threading.Thread(target=server.serve_forever, daemon=True).start()
     log(f"proxy on http://127.0.0.1:{cfg['proxy_port']} -> {UPSTREAM}, "
         f"accounts {cfg['accounts']}, primary {cfg['primary']}, add-ons {list(addons.load()) or 'none'}")
+    if "science" in addons.load() and sys.platform == "darwin":
+        # launchd forgets it at logout, and this runs at every login.
+        science.connect_launchd(client_settings.proxy_url(cfg))
+        if warning := science.daemon_warning(client_settings.proxy_url(cfg), client_settings.proxy_base(cfg)):
+            log(f"warning: {warning}")
 
     state = load_json(STATE_FILE, {})
     state.update(pid=os.getpid(), started_at=now().isoformat(timespec="seconds"),
@@ -270,6 +278,20 @@ def enable_detected_addons() -> str | None:
     return 'found Claude Science: enabled the science add-on (set "addons": [] in config.json to turn it off)'
 
 
+def connect_science(cfg) -> str:
+    """Point Claude Science at the proxy (or stop doing so if the add-on is off)."""
+    url, base = client_settings.proxy_url(cfg), client_settings.proxy_base(cfg)
+    if "science" not in load_json(CONFIG_FILE, {}).get("addons", []):
+        if science.disconnect_launchd(base):
+            return f"launchd: removed {client_settings.PROXY_VAR} (science add-on is off)"
+        return "launchd: not changed (science add-on is off)"
+    status = science.connect_launchd(url)
+    line = f"launchd: {client_settings.PROXY_VAR} = {base}{KEY_PREFIX}… ({status}), for Claude Science"
+    if warning := science.daemon_warning(url, base):
+        line += f"\nwarning: {warning}"
+    return line
+
+
 def cmd_install(args, cfg):
     if sys.platform != "darwin":
         sys.exit("install is macOS-only; run `serve` under systemd or similar elsewhere")
@@ -296,6 +318,7 @@ def cmd_install(args, cfg):
     for line in client_settings.connect_clients(cfg, claude=not args.no_claude_settings,
                                                 vscode=not args.no_vscode_settings):
         print(line)
+    print(connect_science(cfg))
     print("installed: the proxy and menu bar app now start at every login.")
 
 
@@ -303,6 +326,8 @@ def cmd_uninstall(args, cfg):
     service.remove_agents()
     for line in client_settings.disconnect_clients(cfg):
         print(line)
+    if science.disconnect_launchd(client_settings.proxy_base(cfg)):
+        print(f"launchd: removed {client_settings.PROXY_VAR} (quit and reopen Claude Science to drop it there too)")
     print("removed the LaunchAgents and the menu bar app (credentials and config are kept;"
           " use `remove NAME` to delete an account)")
 

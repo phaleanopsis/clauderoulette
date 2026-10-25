@@ -63,7 +63,7 @@ That's it: every new `claude` session in the terminal or VS Code now goes throug
 | Claude Code in VS Code, Cursor, VSCodium | ✅ |
 | Claude desktop app, Code tab | ❌ (ignores `ANTHROPIC_BASE_URL`) |
 | claude.ai chat (web or desktop) | ❌ (still counted: the proxy sees its usage) |
-| Claude Science | ✅ (`install` turns this on when Claude Science is installed) |
+| Claude Science | ✅ (`install` turns this on when Claude Science is installed; quit and reopen Science afterwards) |
 
 Shells opened from the Claude desktop app inherit their own `ANTHROPIC_BASE_URL`, so plain `claude` there goes direct. Use `claude-roulette run` instead.
 
@@ -159,8 +159,9 @@ Each machine gets its own logins, so two machines never invalidate each other's.
 - **LaunchAgents** in `~/Library/LaunchAgents`: `com.user.claude-roulette` (the proxy, always restarted) and `com.user.claude-roulette.bar` (the menu bar app). Both start at login.
 - **`~/.claude/settings.json`:** adds `"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:8789/k/<key>"}` and makes the file readable by you only.
 - **VS Code user settings** (and Insiders, Cursor, VSCodium if present): adds the same variable to `claudeCode.environmentVariables`.
+- **launchd's environment** (only with the Science add-on on): `launchctl setenv ANTHROPIC_BASE_URL …`, for [Claude Science](#details). Every app opened afterwards inherits it, so the proxy also sees requests from other apps and shells. Those without a claude.ai login (e.g. an API key) are passed through untouched.
 
-Only that one key changes; comments and formatting are kept. The original is backed up as `settings.json.bak-roulette`. Files that can't be parsed are skipped and reported. `uninstall` removes the entries if they still point at this proxy.
+In the files, only that one key changes; comments and formatting are kept. The original is backed up as `settings.json.bak-roulette`. Files that can't be parsed are skipped and reported. `uninstall` removes the entries if they still point at this proxy.
 
 `<key>` is a random secret in `~/.claude-roulette/proxy-key`. The proxy refuses any request without it, so other programs that can reach the port (containers via `host.docker.internal`, other users on the Mac, web pages) can't use your accounts. `run`, `status` and `install` also check that whatever answers on the port knows the key before trusting it.
 
@@ -187,6 +188,8 @@ After sleep, the proxy fetches fresh usage straight away. A 07:00 ping missed wh
 <summary><b>Claude Science</b></summary>
 
 Claude Science requests are recognised by `X-Anthropic-Surface: operon`, and the conversation id is read from `metadata.user_id` (`session_id = <root>[:<frame>][:<lane>]`). `install` adds `"addons": ["science"]` to `config.json` when it finds `Claude Science.app` and you haven't set `addons` yourself. With it on, every request of a conversation (main agent, frames, side tasks such as the title generator) is pinned to one account, exactly like a Claude Code session. `status` lists Science conversations with all others.
+
+Science's background service takes its API URL only from its environment (`ANTHROPIC_BASE_URL`), inherited from launchd when the app starts; it doesn't read `~/.claude/settings.json`. So `install` puts the proxy URL into launchd's environment, and the proxy sets it again at every login, because launchd forgets it. **Quit Claude Science completely and open it again after `install`**: until then it sends requests on its own login, bypassing the proxy and your `account_caps`. `install` and `status` warn while a running Science service doesn't use the proxy. If Science starts at login before the proxy does, reopen it once. `uninstall`, or `"addons": []` followed by `install`, removes the variable again.
 
 Set `"science_mode": "observe"` to let Science requests through on Science's own login instead; they still show up in `serve.log`. An explicit `claude-roulette run --account` still wins over a pin.
 

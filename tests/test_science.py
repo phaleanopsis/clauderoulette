@@ -1,4 +1,5 @@
 import json
+import subprocess
 import threading
 import time
 import urllib.parse
@@ -7,7 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from claude_roulette import addons, credentials
+from claude_roulette import addons, credentials, science
 from claude_roulette.config import CONFIG_FILE, DEFAULTS, save_json
 from claude_roulette.conversations import PINS_FILE, ConversationPins
 from claude_roulette.proxy import ProxyHandler
@@ -71,9 +72,9 @@ def setup():
     addons._loaded = None
 
 
-def call(base, body, surface="operon"):
+def call(base, body, surface="operon", auth="Bearer user-login"):
     req = urllib.request.Request(base + "/v1/messages", data=body, method="POST", headers={
-        "Authorization": "Bearer user-login", "X-Anthropic-Surface": surface, "Accept-Encoding": "gzip"})
+        "Authorization": auth, "X-Anthropic-Surface": surface, "Accept-Encoding": "gzip"})
     with urllib.request.urlopen(req) as resp:
         return resp.status
 
@@ -105,6 +106,13 @@ def test_observe_mode_passes_through(setup):
     assert "conv1" not in pins.pins
 
 
+def test_requests_without_a_login_pass_through(setup):
+    base, cfg, pins = setup  # e.g. an API-key app that inherited the URL from launchd
+    call(base, science_body("conv1"), auth="Basic not-a-login")
+    assert FakeUpstream.seen[0][0] == "Basic not-a-login"
+    assert "conv1" not in pins.pins
+
+
 def test_other_clients_are_not_claimed(setup):
     base, cfg, pins = setup
     call(base, science_body("conv1"), surface="cli")
@@ -126,4 +134,69 @@ def test_install_enables_science_only_if_found_and_unset(monkeypatch):
     assert json.loads(CONFIG_FILE.read_text())["addons"] == ["science"]
     save_json(CONFIG_FILE, {"addons": []})  # turned off by hand: stays off
     assert cli.enable_detected_addons() is None
+    CONFIG_FILE.unlink()
+
+
+class FakeLaunchd:
+    """Stands in for launchctl, pgrep and ps, so tests never touch the real launchd."""
+
+    def __init__(self, env=None, daemons=()):
+        self.env = dict(env or {})
+        self.daemons = list(daemons)  # ANTHROPIC_BASE_URL of each running service, or None
+
+    def run(self, cmd, **kw):
+        out = ""
+        if cmd[:2] == ["launchctl", "getenv"]:
+            out = self.env.get(cmd[2], "")
+        elif cmd[:2] == ["launchctl", "setenv"]:
+            self.env[cmd[2]] = cmd[3]
+        elif cmd[:2] == ["launchctl", "unsetenv"]:
+            self.env.pop(cmd[2], None)
+        elif cmd[0] == "pgrep":
+            out = "\n".join(str(100 + i) for i in range(len(self.daemons)))
+        elif cmd[0] == "ps":
+            url = self.daemons[int(cmd[-1]) - 100]
+            out = "/x/claude-science serve --app HOME=/h" + (f" ANTHROPIC_BASE_URL={url}" if url else "")
+        return subprocess.CompletedProcess(cmd, 0, out, "")
+
+
+BASE = "http://127.0.0.1:8789"
+URL = BASE + "/k/secret"
+
+
+def test_launchd_url_is_set_and_only_our_own_removed(monkeypatch):
+    fake = FakeLaunchd()
+    monkeypatch.setattr(science.subprocess, "run", fake.run)
+    assert science.connect_launchd(URL) == "set" and fake.env["ANTHROPIC_BASE_URL"] == URL
+    assert science.connect_launchd(URL) == "unchanged"
+    assert science.disconnect_launchd(BASE) and "ANTHROPIC_BASE_URL" not in fake.env
+    fake.env["ANTHROPIC_BASE_URL"] = "https://gateway.example"  # set by hand: kept
+    assert not science.disconnect_launchd(BASE)
+    assert fake.env["ANTHROPIC_BASE_URL"] == "https://gateway.example"
+
+
+@pytest.mark.parametrize("daemons, problem", [
+    ([], None),
+    ([URL], None),
+    ([None], "without the proxy"),
+    ([URL, "https://api.anthropic.com"], "without the proxy"),
+    ([BASE + "/k/old"], "outdated"),
+])
+def test_warns_about_a_science_service_that_bypasses_the_proxy(monkeypatch, daemons, problem):
+    monkeypatch.setattr(science.subprocess, "run", FakeLaunchd(daemons=daemons).run)
+    warning = science.daemon_warning(URL, BASE)
+    assert warning is None if problem is None else problem in warning
+
+
+def test_install_sets_the_url_only_while_science_is_on(monkeypatch):
+    from claude_roulette import cli, client_settings
+    fake = FakeLaunchd(daemons=[None])
+    monkeypatch.setattr(science.subprocess, "run", fake.run)
+    cfg = {**DEFAULTS, "accounts": ["a"]}
+    save_json(CONFIG_FILE, {"addons": ["science"]})
+    report = cli.connect_science(cfg)
+    assert fake.env["ANTHROPIC_BASE_URL"] == client_settings.proxy_url(cfg)
+    assert "Quit Claude Science" in report and client_settings.proxy_key() not in report
+    save_json(CONFIG_FILE, {"addons": []})
+    assert "removed" in cli.connect_science(cfg) and "ANTHROPIC_BASE_URL" not in fake.env
     CONFIG_FILE.unlink()

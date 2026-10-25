@@ -162,6 +162,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
         self.path = "/" + rest
         return True
 
+    def _subscription_login(self) -> bool:
+        return (self.headers.get("Authorization") or "").startswith("Bearer ")
+
     def _hello(self) -> None:
         """Prove that this is the proxy holding the key, without revealing the key."""
         nonce = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("nonce", [""])[0]
@@ -200,10 +203,12 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if req is not None:
             conv = route.conversation if route else (
                 claude_code_conversation(req) if cfg["code_mode"] != "off" else None)
-        pinned = bool(conv and self.pins and not (route and route.passthrough)
-                      and (route or cfg["code_mode"] == "pin"))
+        # Without a claude.ai login (e.g. an API key, from any app that inherited the URL
+        # through launchd) there's nothing to swap: send it on the client's own credentials.
+        passthrough = bool(route and route.passthrough) or not self._subscription_login()
+        pinned = bool(conv and self.pins and not passthrough and (route or cfg["code_mode"] == "pin"))
         plain = turn
-        if not is_inference(self.path) or (route and route.passthrough):
+        if not is_inference(self.path) or passthrough:
             try:
                 conn, resp = self._send_upstream(None, body, plain)
             except (OSError, http.client.HTTPException) as e:

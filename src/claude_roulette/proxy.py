@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import http.client
 import json
-import socket
+import secrets
 import threading
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler
 
 from . import addons, measure
-from .config import log
+from .config import log, proxy_key
 from .conversations import (
     Conversation,
     ConversationPins,
@@ -26,6 +28,12 @@ from .credentials import AuthDead, access_token
 from .router import Router
 
 FORCE_HEADER = "x-roulette-account"  # set via ANTHROPIC_CUSTOM_HEADERS to pin an account
+KEY_PREFIX = "/k/"  # clients use http://127.0.0.1:PORT/k/<proxy key> as their base URL
+HELLO_PATH = "/_roulette/hello"  # lets proxy_status() tell this proxy from whatever else holds the port
+TURN_PATH = "/v1/messages"
+# Exact paths only: anything else (other endpoints, or `..` tricks that a server might resolve to
+# one) goes through on the client's own login, never an account's.
+INFERENCE_PATHS = {TURN_PATH, "/v1/messages/count_tokens"}
 
 HEAD_BYTES = 16384  # enough of a response to hold its usage block
 TAIL_BYTES = 4096  # the final message_delta, with output_tokens
@@ -36,18 +44,23 @@ HOP_HEADERS = {"connection", "keep-alive", "proxy-connection", "transfer-encodin
 
 
 def is_inference(path: str) -> bool:
-    return path.split("?")[0].startswith("/v1/messages")
+    return path.split("?")[0] in INFERENCE_PATHS
 
 
 def is_turn(path: str) -> bool:
-    """A model turn, as opposed to count_tokens or batches."""
-    return path.split("?")[0] == "/v1/messages"
+    """A model turn, as opposed to count_tokens."""
+    return path.split("?")[0] == TURN_PATH
+
+
+def proof(key: str, nonce: str) -> str:
+    return hmac.new(key.encode(), f"claude-roulette:{nonce}".encode(), hashlib.sha256).hexdigest()
 
 
 class ProxyHandler(BaseHTTPRequestHandler):
     router: Router
     pins: ConversationPins | None = None
     upstream: urllib.parse.SplitResult
+    key: str  # config.proxy_key()
     debug = False
 
     def log_message(self, fmt, *args):
@@ -132,10 +145,53 @@ class ProxyHandler(BaseHTTPRequestHandler):
                                         "send the message again."})
         return account
 
+    def _local_host(self) -> bool:
+        """Whether the Host header names this proxy. A web page that re-points its own domain
+        at 127.0.0.1 (DNS rebinding) can reach the port, but its requests carry that domain."""
+        host = (self.headers.get("Host") or "").lower()
+        port = self.server.server_address[1]
+        return host in {f"127.0.0.1:{port}", f"localhost:{port}", "127.0.0.1", "localhost"}
+
+    def _take_key(self) -> bool:
+        """Check the key at the front of the path and strip it, so it's neither forwarded nor logged."""
+        if not self.path.startswith(KEY_PREFIX):
+            return False
+        key, sep, rest = self.path[len(KEY_PREFIX):].partition("/")
+        if not sep or not hmac.compare_digest(key.encode(), self.key.encode()):
+            return False
+        self.path = "/" + rest
+        return True
+
+    def _hello(self) -> None:
+        """Prove that this is the proxy holding the key, without revealing the key."""
+        nonce = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("nonce", [""])[0]
+        body = json.dumps({"proof": proof(self.key, nonce)}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(body)
+
     def _forward(self):
+        self.stream_open = False
+        if not self._local_host():
+            log(f"refused {self.command}: foreign Host header")
+            self._fail(403, {"type": "permission_error",
+                             "message": "claude-roulette only accepts requests addressed to 127.0.0.1 or localhost"})
+            return
+        if self.command == "GET" and self.path.split("?")[0] == HELLO_PATH:
+            self._hello()
+            return
+        if not self._take_key():
+            log(f"refused {self.command}: missing or wrong proxy key in the URL")
+            self._fail(403, {"type": "permission_error",
+                             "message": "claude-roulette: this URL lacks the proxy key. Run `claude-roulette install` "
+                                        "again to update ANTHROPIC_BASE_URL, or start Claude Code with "
+                                        "`claude-roulette run`."})
+            return
         body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
         conn = resp = name = None
-        self.stream_open = False
         cfg = self.router.cfg
         route = addons.route(self.headers, body) if is_inference(self.path) else None
         turn = is_turn(self.path)
@@ -153,7 +209,15 @@ class ProxyHandler(BaseHTTPRequestHandler):
             except (OSError, http.client.HTTPException) as e:
                 log(f"passthrough error: {e}")
         else:
-            forced = self.headers.get(FORCE_HEADER) or (route and route.account)
+            pin_header = self.headers.get(FORCE_HEADER)
+            if pin_header and pin_header not in cfg["accounts"]:
+                # Unknown names would otherwise reach the secret store and pile up in router.dead.
+                log(f"refused {FORCE_HEADER}: not a configured account")
+                self._fail(400, {"type": "invalid_request_error",
+                                 "message": f"claude-roulette: {FORCE_HEADER} names no configured account "
+                                            f"(configured: {', '.join(cfg['accounts'])})"})
+                return
+            forced = pin_header or (route and route.account)
             if not forced and pinned:
                 forced, question = self.pins.account_for(conv, cache_ttls(req))
                 if question:
@@ -253,9 +317,30 @@ class ProxyHandler(BaseHTTPRequestHandler):
     do_GET = do_POST = do_PUT = do_PATCH = do_DELETE = _forward
 
 
-def proxy_running(cfg: dict) -> bool:
+def proxy_status(cfg: dict) -> str:
+    """"ours" if this installation's proxy answers on the port, "other" if something else does,
+    "down" if nothing does.
+
+    Whatever holds the port receives everything Claude Code sends there, its login token
+    included, so only "ours" may be routed through.
+    """
+    nonce = secrets.token_hex(16)
+    conn = http.client.HTTPConnection("127.0.0.1", cfg["proxy_port"], timeout=2)
     try:
-        with socket.create_connection(("127.0.0.1", cfg["proxy_port"]), timeout=0.5):
-            return True
-    except OSError:
-        return False
+        conn.request("GET", f"{HELLO_PATH}?nonce={nonce}")
+        answer = json.loads(conn.getresponse().read(4096)).get("proof")
+    except ConnectionRefusedError:
+        return "down"
+    except (OSError, http.client.HTTPException, ValueError, AttributeError):
+        return "other"
+    finally:
+        conn.close()
+    ok = isinstance(answer, str) and hmac.compare_digest(answer.encode(), proof(proxy_key(), nonce).encode())
+    return "ours" if ok else "other"
+
+
+def port_taken(cfg: dict) -> str:
+    port = cfg["proxy_port"]
+    return (f"something other than the claude-roulette proxy is listening on 127.0.0.1:{port}, and Claude Code "
+            f"would send it your login token and conversations. If you just upgraded, run `claude-roulette "
+            f"install`; otherwise find it with `lsof -nP -iTCP:{port} -sTCP:LISTEN`.")

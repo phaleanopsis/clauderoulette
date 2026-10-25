@@ -31,16 +31,20 @@ from .config import (
     LOGIN_DIR,
     STATE_FILE,
     TOKENS_FILE,
+    UPSTREAM,
+    check_account_name,
+    ensure_home,
     load_config,
     load_json,
     log,
+    proxy_key,
     save_config_keys,
     save_json,
 )
 from .conversations import ConversationPins, status_lines
 from .credentials import KEYCHAIN_SERVICE, _has_keychain, import_login, kc_delete
 from .priming import claude_env, next_ping_text, prime_account, run_auto_prime, run_schedule
-from .proxy import FORCE_HEADER, ProxyHandler, proxy_running
+from .proxy import FORCE_HEADER, ProxyHandler, port_taken, proxy_status
 from .router import Router
 from .usage import Usage, caps, least_used, now, parse_ts, probe
 
@@ -92,7 +96,7 @@ def print_table(usages: list[Usage], cfg: dict, current: str | None = None,
 # --------------------------------------------------------------------------- CLI
 
 def cmd_add(args, cfg):
-    name = args.name
+    name = check_account_name(args.name)
     login_dir = LOGIN_DIR / name
     if login_dir.exists():
         shutil.rmtree(login_dir)
@@ -139,7 +143,10 @@ def cmd_status(args, cfg):
     if mismatch:
         print(f"warning: {mismatch}; run `claude-roulette install` again to update it\n")
     state = load_json(STATE_FILE, {})
-    if proxy_running(cfg) and state.get("usages"):
+    proxy = proxy_status(cfg)
+    if proxy == "other":
+        print(f"warning: {port_taken(cfg)}\n")
+    if proxy == "ours" and state.get("usages"):
         usages = [Usage(**{**u, "session_reset": parse_ts(u["session_reset"]),
                            "weekly_reset": parse_ts(u["weekly_reset"])})
                   for u in state["usages"].values()]
@@ -158,20 +165,24 @@ def cmd_status(args, cfg):
 def cmd_serve(args, cfg):
     if not cfg["accounts"]:
         sys.exit("no accounts configured; run `add` first")
+    ensure_home()
     router = Router(cfg)
     for addon in addons.load().values():
         addon.start(router)
     ProxyHandler.router = router
     ProxyHandler.pins = pins = ConversationPins(router)
-    ProxyHandler.upstream = urllib.parse.urlsplit(cfg["upstream"])
+    ProxyHandler.upstream = urllib.parse.urlsplit(UPSTREAM)
+    ProxyHandler.key = proxy_key()
     ProxyHandler.debug = args.debug
     try:
         server = ThreadingHTTPServer(("127.0.0.1", cfg["proxy_port"]), ProxyHandler)
     except OSError as e:
+        if proxy_status(cfg) == "other":
+            log(f"warning: {port_taken(cfg)}")
         sys.exit(f"cannot listen on 127.0.0.1:{cfg['proxy_port']} ({e}); is another `serve` running?")
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    log(f"proxy on http://127.0.0.1:{cfg['proxy_port']} -> {cfg['upstream']}, "
+    log(f"proxy on http://127.0.0.1:{cfg['proxy_port']} -> {UPSTREAM}, "
         f"accounts {cfg['accounts']}, primary {cfg['primary']}, add-ons {list(addons.load()) or 'none'}")
 
     state = load_json(STATE_FILE, {})
@@ -217,8 +228,13 @@ def cmd_measure(args, cfg):
 
 def cmd_run(args, cfg):
     claude_args = args.claude_args[1:] if args.claude_args[:1] == ["--"] else args.claude_args
-    if proxy_running(cfg):
-        env = claude_env(ANTHROPIC_BASE_URL=f"http://127.0.0.1:{cfg['proxy_port']}")
+    if args.account and args.account not in cfg["accounts"]:
+        sys.exit(f"unknown account {args.account!r} (configured: {', '.join(cfg['accounts'])})")
+    proxy = proxy_status(cfg)
+    if proxy == "other":
+        sys.exit(port_taken(cfg))
+    if proxy == "ours":
+        env = claude_env(ANTHROPIC_BASE_URL=client_settings.proxy_url(cfg))
         if args.account:
             env["ANTHROPIC_CUSTOM_HEADERS"] = f"{FORCE_HEADER}: {args.account}"
             log(f"routing through proxy, pinned to {args.account}")
@@ -269,11 +285,12 @@ def cmd_install(args, cfg):
         # Restart only if it crashed; choosing Quit keeps it closed until the next login.
         agents[service.BAR_LABEL] = service.agent_plist(
             service.BAR_LABEL, [str(service.APP_EXE)], {"SuccessfulExit": False}, None)
-    if proxy_running(cfg):
+    if proxy_status(cfg) != "down":  # ours, or an older version that can't prove it yet
         service.bootout(service.SERVE_LABEL)
         time.sleep(1)
-        if proxy_running(cfg):
-            sys.exit(f"port {cfg['proxy_port']} is in use; stop the `serve` you started by hand first")
+        if proxy_status(cfg) != "down":
+            sys.exit(f"port {cfg['proxy_port']} is in use; stop the `serve` you started by hand first "
+                     f"(find it with `lsof -nP -iTCP:{cfg['proxy_port']} -sTCP:LISTEN`)")
     for label, plist in agents.items():
         print(f"loaded {service.write_agent(label, plist)}")
     for line in client_settings.connect_clients(cfg, claude=not args.no_claude_settings,

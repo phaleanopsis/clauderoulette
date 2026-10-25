@@ -61,9 +61,10 @@ def setup():
     ProxyHandler.router = router
     ProxyHandler.pins = pins = ConversationPins(router, ask=lambda *a, **k: None)
     ProxyHandler.upstream = urllib.parse.urlsplit(f"http://127.0.0.1:{upstream.server_port}")
+    ProxyHandler.key = "test-key"
     server = serve(ProxyHandler)
     FakeUpstream.seen = []
-    yield f"http://127.0.0.1:{server.server_port}", cfg, pins
+    yield f"http://127.0.0.1:{server.server_port}/k/test-key", cfg, pins
     server.shutdown()
     upstream.shutdown()
     CONFIG_FILE.unlink()

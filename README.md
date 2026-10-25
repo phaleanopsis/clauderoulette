@@ -12,7 +12,7 @@ Use two (or more) Claude subscriptions in the same setup to get the most out of 
 
 ```
  claude (terminal / VS Code)
-   │  ANTHROPIC_BASE_URL=http://127.0.0.1:8789
+   │  ANTHROPIC_BASE_URL=http://127.0.0.1:8789/k/<key>
    ▼
  local proxy ──► picks the account with more available capacity ──► api.anthropic.com
    ▲
@@ -52,8 +52,8 @@ claude-roulette status                  # check that both accounts show up
 
 That's it: every new `claude` session in the terminal or VS Code now goes through the proxy.
 
-**Update:** `uv tool upgrade claude-roulette && claude-roulette install`
-**Remove:** `claude-roulette uninstall` (removes the service, menu bar app and settings entries; your logins and config are kept), then `uv tool uninstall claude-roulette`
+**Update:** `uv tool upgrade claude-roulette && claude-roulette install` (until you run `install`, the new version may refuse requests from settings written by an older one)
+**Remove:** `claude-roulette uninstall` (removes the service, menu bar app and settings entries; your logins and config are kept), then `uv tool uninstall claude-roulette`. Keep that order: settings left pointing at the port send Claude Code's login and conversations to whatever program listens there next.
 
 ### What works
 
@@ -146,6 +146,9 @@ When it asks, your message is held until you answer (up to 2 minutes), and the a
 - Tokens are refreshed before they expire and the new refresh token is saved back.
 - An account whose login is rejected (`invalid_grant`) is skipped until you run `add` again.
 - On Linux, logins fall back to a chmod-600 `~/.claude-roulette/tokens.json`.
+- Tokens are only ever sent to `api.anthropic.com` and Anthropic's token endpoint; neither is a setting. With `CLAUDE_ROULETTE_HOME` set (meant for tests), the Keychain is not used at all.
+
+**What the Keychain doesn't protect against:** the items are written by Apple's `security` tool, and macOS lets that tool read them back without asking. So any program running as you can read these logins, just as it can read Claude Code's own. Treat malware on your account as having all of them.
 
 Each machine gets its own logins, so two machines never invalidate each other's.
 </details>
@@ -154,10 +157,12 @@ Each machine gets its own logins, so two machines never invalidate each other's.
 <summary><b>What <code>install</code> changes</b></summary>
 
 - **LaunchAgents** in `~/Library/LaunchAgents`: `com.user.claude-roulette` (the proxy, always restarted) and `com.user.claude-roulette.bar` (the menu bar app). Both start at login.
-- **`~/.claude/settings.json`:** adds `"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:8789"}`.
+- **`~/.claude/settings.json`:** adds `"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:8789/k/<key>"}` and makes the file readable by you only.
 - **VS Code user settings** (and Insiders, Cursor, VSCodium if present): adds the same variable to `claudeCode.environmentVariables`.
 
 Only that one key changes; comments and formatting are kept. The original is backed up as `settings.json.bak-roulette`. Files that can't be parsed are skipped and reported. `uninstall` removes the entries if they still point at this proxy.
+
+`<key>` is a random secret in `~/.claude-roulette/proxy-key`. The proxy refuses any request without it, so other programs that can reach the port (containers via `host.docker.internal`, other users on the Mac, web pages) can't use your accounts. `run`, `status` and `install` also check that whatever answers on the port knows the key before trusting it.
 
 **While the proxy is down, sessions that use these settings fail** with a connection error. Setting only `ANTHROPIC_BASE_URL` is a [documented setup](https://code.claude.com/docs/en/llm-gateway#subscriptions-and-gateways) that keeps your claude.ai login and subscription billing.
 

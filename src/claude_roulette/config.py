@@ -5,11 +5,15 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
+import secrets
 import sys
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
+# A custom home is for tests: it never reaches the Keychain (see credentials._has_keychain).
+CUSTOM_HOME = "CLAUDE_ROULETTE_HOME" in os.environ
 HOME = Path(os.environ.get("CLAUDE_ROULETTE_HOME", Path.home() / ".claude-roulette"))
 CONFIG_FILE = HOME / "config.json"
 STATE_FILE = HOME / "state.json"
@@ -17,6 +21,9 @@ LOCK_FILE = HOME / ".lock"
 TOKENS_FILE = HOME / "tokens.json"  # only used when the Keychain is unavailable
 LOGIN_DIR = HOME / "login"  # throwaway CLAUDE_CONFIG_DIRs used by `add`
 PRIME_CWD = HOME / "prime"  # pings run here so they don't clutter your project history
+KEY_FILE = HOME / "proxy-key"  # the secret clients put in the proxy URL (see proxy_key)
+# Where access tokens go. Fixed, not a setting: whoever could change it would receive them.
+UPSTREAM = "https://api.anthropic.com"
 
 DEFAULTS = {
     "accounts": [],
@@ -24,7 +31,6 @@ DEFAULTS = {
     "emails": {},
     "primary": None,  # preferred account
     "claude_bin": "claude",
-    "upstream": "https://api.anthropic.com",
     "proxy_port": 8789,
     "session_cap": 95.0,  # % of 5h window at which an account is considered full
     "weekly_cap": 98.0,  # % of weekly limit at which an account is considered full
@@ -57,6 +63,46 @@ DEFAULTS = {
 }
 
 
+# Account names end up in paths (login/NAME) and in `security -i` commands: keep them plain.
+ACCOUNT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,31}")
+
+
+def check_account_name(name: str) -> str:
+    if not ACCOUNT_NAME.fullmatch(name):
+        raise SystemExit(f"invalid account name {name!r}: use 1-32 letters, digits, '-' or '_'")
+    return name
+
+
+def ensure_home() -> None:
+    """Create ~/.claude-roulette readable by its owner only (it holds emails, logs and,
+    without a Keychain, the tokens), and tighten it if an older version left it open."""
+    HOME.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if HOME.stat().st_mode & 0o077:
+        HOME.chmod(0o700)
+
+
+def open_private(path: Path, flags: int):
+    """os.open opener that creates files as 0600 from the start."""
+    return os.open(path, flags, 0o600)
+
+
+def proxy_key() -> str:
+    """The proxy's secret, created on first use. Only requests whose URL carries it get an
+    account's token, so other processes, containers and web pages that can reach the port can't."""
+    ensure_home()
+    if not KEY_FILE.exists():
+        tmp = KEY_FILE.with_name(f"{KEY_FILE.name}.{os.getpid()}")
+        with open(tmp, "w", opener=open_private) as f:
+            f.write(secrets.token_urlsafe(24))
+        try:
+            os.link(tmp, KEY_FILE)  # fails if another process created it first: theirs wins
+        except FileExistsError:
+            pass
+        finally:
+            tmp.unlink()
+    return KEY_FILE.read_text().strip()
+
+
 def load_json(path: Path, default):
     try:
         return json.loads(path.read_text())
@@ -65,9 +111,11 @@ def load_json(path: Path, default):
 
 
 def save_json(path: Path, data) -> None:
-    HOME.mkdir(parents=True, exist_ok=True)
+    ensure_home()
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=2, default=str))
+    tmp.unlink(missing_ok=True)  # a leftover could carry looser permissions
+    with open(tmp, "w", opener=open_private) as f:
+        f.write(json.dumps(data, indent=2, default=str))
     tmp.replace(path)
 
 
@@ -94,8 +142,8 @@ def log(msg: str) -> None:
 @contextmanager
 def file_lock():
     """Serialises token refreshes across `serve`, `status` and `prime` processes."""
-    HOME.mkdir(parents=True, exist_ok=True)
-    with open(LOCK_FILE, "w") as f:
+    ensure_home()
+    with open(LOCK_FILE, "w", opener=open_private) as f:
         fcntl.flock(f, fcntl.LOCK_EX)
         try:
             yield

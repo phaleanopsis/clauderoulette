@@ -1,4 +1,5 @@
 import json
+import socket
 import threading
 import time
 import urllib.error
@@ -9,9 +10,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 
 from claude_roulette import credentials
+from claude_roulette import proxy as proxy_mod
 from claude_roulette.config import DEFAULTS
 from claude_roulette.proxy import FORCE_HEADER, ProxyHandler
 from claude_roulette.router import Router
+
+KEY = "test-key"
 
 
 class FakeUpstream(BaseHTTPRequestHandler):
@@ -51,9 +55,10 @@ def proxy():
     cfg = {**DEFAULTS, "accounts": ["a", "b"], "primary": "a"}
     ProxyHandler.router = Router(cfg)
     ProxyHandler.upstream = urllib.parse.urlsplit(f"http://127.0.0.1:{upstream.server_port}")
+    ProxyHandler.key = KEY
     server = serve(ProxyHandler)
     FakeUpstream.seen, FakeUpstream.limited = [], set()
-    yield f"http://127.0.0.1:{server.server_port}"
+    yield f"http://127.0.0.1:{server.server_port}/k/{KEY}"
     server.shutdown()
     upstream.shutdown()
 
@@ -86,3 +91,75 @@ def test_pinned_account_is_used_and_header_stripped(proxy):
     assert call(proxy, "/v1/messages", {FORCE_HEADER: "b"}) == (200, "Bearer tok-b")
     FakeUpstream.limited = {"Bearer tok-b"}
     assert call(proxy, "/v1/messages", {FORCE_HEADER: "b"}) == (429, "Bearer tok-b")  # no failover when pinned
+
+
+@pytest.mark.parametrize("host", ["attacker.example:{port}", "attacker.example", "127.0.0.1.nip.io:{port}", ""])
+def test_foreign_host_is_refused_before_any_token_is_used(proxy, host):
+    """DNS rebinding: a web page's request reaches 127.0.0.1 but names its own domain."""
+    port = urllib.parse.urlsplit(proxy).port
+    req = urllib.request.Request(proxy + "/v1/messages", data=b"{}", method="POST",
+                                 headers={"Authorization": "Bearer x", "Host": host.format(port=port)})
+    with pytest.raises(urllib.error.HTTPError) as e:
+        urllib.request.urlopen(req)
+    assert e.value.code == 403
+    assert json.load(e.value)["error"]["type"] == "permission_error"
+    assert FakeUpstream.seen == []
+
+
+def test_localhost_host_is_accepted(proxy):
+    port = urllib.parse.urlsplit(proxy).port
+    assert call(proxy, "/v1/messages", {"Host": f"localhost:{port}"}) == (200, "Bearer tok-a")
+
+
+def test_unknown_pinned_account_is_refused(proxy):
+    status, _ = call_error(proxy, {FORCE_HEADER: "nobody"})
+    assert status == 400
+    assert FakeUpstream.seen == []
+    assert ProxyHandler.router.dead == {}
+
+
+def call_error(base, headers):
+    req = urllib.request.Request(base + "/v1/messages", data=b"{}", method="POST",
+                                 headers={"Authorization": "Bearer user-login", **headers})
+    with pytest.raises(urllib.error.HTTPError) as e:
+        urllib.request.urlopen(req)
+    return e.value.code, json.load(e.value)
+
+
+@pytest.mark.parametrize("prefix", ["", "/k/wrong", "/k", f"/k/{KEY}x"])
+def test_requests_without_the_key_are_refused(proxy, prefix):
+    """Containers, other users and web pages can reach the port, but don't know the key."""
+    origin = proxy.removesuffix(f"/k/{KEY}")
+    req = urllib.request.Request(origin + prefix + "/v1/messages", data=b"{}", method="POST",
+                                 headers={"Authorization": "Bearer x"})
+    with pytest.raises(urllib.error.HTTPError) as e:
+        urllib.request.urlopen(req)
+    assert e.value.code == 403
+    assert FakeUpstream.seen == []
+
+
+def test_key_is_not_forwarded(proxy):
+    assert call(proxy, "/v1/messages?beta=true") == (200, "Bearer tok-a")
+    assert FakeUpstream.seen[-1][0] == "/v1/messages?beta=true"
+
+
+def test_count_tokens_gets_an_account_token(proxy):
+    assert call(proxy, "/v1/messages/count_tokens") == (200, "Bearer tok-a")
+
+
+@pytest.mark.parametrize("path", ["/v1/messages/../../api/oauth/profile", "/v1/messages/%2e%2e/x",
+                                  "/v1/messages/batches", "/v1/messagesx", "/v1//messages"])
+def test_only_exact_inference_paths_get_an_account_token(proxy, path):
+    assert call(proxy, path)[1] == "Bearer user-login"
+
+
+def test_proxy_status_tells_this_proxy_from_others(proxy, monkeypatch):
+    monkeypatch.setattr(proxy_mod, "proxy_key", lambda: KEY)
+    assert proxy_mod.proxy_status({"proxy_port": urllib.parse.urlsplit(proxy).port}) == "ours"
+    assert proxy_mod.proxy_status({"proxy_port": ProxyHandler.upstream.port}) == "other"  # answers, can't prove
+    monkeypatch.setattr(proxy_mod, "proxy_key", lambda: "another-key")
+    assert proxy_mod.proxy_status({"proxy_port": urllib.parse.urlsplit(proxy).port}) == "other"
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        free = s.getsockname()[1]
+    assert proxy_mod.proxy_status({"proxy_port": free}) == "down"

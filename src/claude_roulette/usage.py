@@ -8,6 +8,7 @@ import urllib.request
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 
+from .config import UPSTREAM
 from .credentials import OAUTH_BETA, USER_AGENT, AuthDead, access_token
 
 
@@ -48,7 +49,7 @@ def probe(name: str, cfg: dict) -> Usage:
         return Usage(name, error=str(e), source="dead")
     except OSError as e:
         return Usage(name, error=str(e))
-    req = urllib.request.Request(cfg["upstream"].rstrip("/") + "/api/oauth/usage", headers={
+    req = urllib.request.Request(UPSTREAM + "/api/oauth/usage", headers={
         "Authorization": f"Bearer {token}",
         "anthropic-beta": OAUTH_BETA,
         "User-Agent": USER_AGENT,

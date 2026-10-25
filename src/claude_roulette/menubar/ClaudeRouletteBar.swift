@@ -1,8 +1,9 @@
 // Menu bar companion for claude-roulette.
 //
 // Reads ~/.claude-roulette/state.json (written by `claude-roulette serve` every ~30 s)
-// and shows the active account plus 5h/weekly usage. It never touches credentials:
-// actions shell out to launchctl and to the CLI command recorded in the state file.
+// and shows the active account plus 5h/weekly usage. It never touches credentials, and the
+// state file is display-only: actions shell out to launchctl and to the CLI command that
+// `install` wrote into this app's Info.plist (ClaudeRouletteCommand).
 //
 // Build: `claude-roulette install` (or see build_app() in claude_roulette/service.py).
 
@@ -11,6 +12,7 @@ import SwiftUI
 
 let rouletteHome = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude-roulette")
 let serveLabel = "com.user.claude-roulette"
+let cliCommand = Bundle.main.object(forInfoDictionaryKey: "ClaudeRouletteCommand") as? [String]
 
 struct UsageRow: Decodable {
     let name: String
@@ -33,7 +35,6 @@ struct RouletteState: Decodable {
     let primary: String?
     let emails: [String: String?]?
     let next_ping: String?
-    let command: [String]?  // argv that runs the CLI, e.g. [python, "-m", "claude_roulette"]
 }
 
 private let isoParser = ISO8601DateFormatter()
@@ -108,8 +109,8 @@ final class Model: ObservableObject {
     // MARK: actions
 
     func pingNow() {
-        guard let cmd = state?.command, let exe = cmd.first else {
-            message = "Start the service first."
+        guard let cmd = cliCommand, let exe = cmd.first else {
+            message = "Run `claude-roulette install` again to rebuild this app."
             return
         }
         run(exe, Array(cmd.dropFirst()) + ["prime"], label: "Ping")

@@ -18,11 +18,27 @@ BAR_LABEL = "com.user.claude-roulette.bar"
 AGENTS_DIR = Path.home() / "Library" / "LaunchAgents"
 APP_DIR = Path.home() / "Applications" / "Claude Roulette.app"
 APP_EXE = APP_DIR / "Contents" / "MacOS" / "ClaudeRouletteBar"
+COMMAND_KEY = "ClaudeRouletteCommand"  # Info.plist: the argv "Ping now" runs (plus "prime")
 
 
 def cli_command() -> list[str]:
     """argv that runs this installation's CLI; launchd and the menu bar app use it."""
     return [sys.executable, "-m", "claude_roulette"]
+
+
+def app_info_plist() -> dict:
+    return {
+        "CFBundleName": "Claude Roulette",
+        "CFBundleIdentifier": BAR_LABEL,
+        "CFBundleExecutable": APP_EXE.name,
+        "CFBundlePackageType": "APPL",
+        "CFBundleShortVersionString": __version__,
+        "LSMinimumSystemVersion": "13.0",
+        "LSUIElement": True,  # menu bar only, no Dock icon
+        # Fixed at build time and sealed by the code signature, so whatever writes state.json
+        # can't choose what the app runs.
+        COMMAND_KEY: cli_command(),
+    }
 
 
 def build_app() -> None:
@@ -31,15 +47,7 @@ def build_app() -> None:
         sys.exit("xcrun not found; install the command line tools with `xcode-select --install`")
     APP_EXE.parent.mkdir(parents=True, exist_ok=True)
     with open(APP_DIR / "Contents" / "Info.plist", "wb") as f:
-        plistlib.dump({
-            "CFBundleName": "Claude Roulette",
-            "CFBundleIdentifier": BAR_LABEL,
-            "CFBundleExecutable": APP_EXE.name,
-            "CFBundlePackageType": "APPL",
-            "CFBundleShortVersionString": __version__,
-            "LSMinimumSystemVersion": "13.0",
-            "LSUIElement": True,  # menu bar only, no Dock icon
-        }, f)
+        plistlib.dump(app_info_plist(), f)
     with as_file(files("claude_roulette") / "menubar" / "ClaudeRouletteBar.swift") as swift_src:
         subprocess.run(["xcrun", "swiftc", "-parse-as-library", "-swift-version", "5", "-O",
                         "-target", f"{os.uname().machine}-apple-macos13", "-o", str(APP_EXE), str(swift_src)],

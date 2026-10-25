@@ -92,3 +92,13 @@ def test_update_file_backs_up_original_once(tmp_path):
     assert (tmp_path / "settings.json.bak-roulette").read_text() == '{"model": "opus"}'
     assert cs.update_file(tmp_path / "new" / "settings.json", "env",
                           lambda v: cs.with_claude_env(v, URL)) == "created"
+
+
+def test_uninstall_removes_our_url_with_or_without_a_key():
+    for value in (URL, URL + "/k/abc"):
+        text = json.dumps({"env": {"ANTHROPIC_BASE_URL": value, "FOO": "1"}})
+        assert parse(edit_top_level(text, "env", lambda v: cs.without_claude_env(v, URL)))["env"] == {"FOO": "1"}
+        items = [{"name": "ANTHROPIC_BASE_URL", "value": value}]
+        assert cs.without_vscode_env(items, URL) is None
+    other = json.dumps({"env": {"ANTHROPIC_BASE_URL": URL + "0"}})  # port 87890: not ours
+    assert edit_top_level(other, "env", lambda v: cs.without_claude_env(v, URL)) == other

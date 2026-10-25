@@ -12,6 +12,9 @@ import json
 from collections.abc import Callable
 from pathlib import Path
 
+from .config import open_private, proxy_key
+from .proxy import KEY_PREFIX
+
 PROXY_VAR = "ANTHROPIC_BASE_URL"
 CLAUDE_SETTINGS = Path.home() / ".claude" / "settings.json"
 VSCODE_KEY = "claudeCode.environmentVariables"
@@ -24,8 +27,18 @@ def vscode_settings_files() -> list[Path]:
     return [base / app / "User" / "settings.json" for app in _EDITOR_APPS if (base / app / "User").is_dir()]
 
 
-def proxy_url(cfg: dict) -> str:
+def proxy_base(cfg: dict) -> str:
     return f"http://127.0.0.1:{cfg['proxy_port']}"
+
+
+def proxy_url(cfg: dict) -> str:
+    """The base URL clients use: it carries the proxy key, which the proxy requires."""
+    return f"{proxy_base(cfg)}{KEY_PREFIX}{proxy_key()}"
+
+
+def _ours(value, base: str) -> bool:
+    """Whether a base URL points at this proxy, with any key or none (as set by older versions)."""
+    return isinstance(value, str) and (value == base or value.startswith(base + "/"))
 
 
 # --------------------------------------------------------------------------- value transforms
@@ -34,8 +47,8 @@ def with_claude_env(env, url: str):
     return {**(env if isinstance(env, dict) else {}), PROXY_VAR: url}
 
 
-def without_claude_env(env, url: str):
-    if not isinstance(env, dict) or env.get(PROXY_VAR) != url:
+def without_claude_env(env, base: str):
+    if not isinstance(env, dict) or not _ours(env.get(PROXY_VAR), base):
         return env  # not ours (e.g. set to something else by hand): leave it
     rest = {k: v for k, v in env.items() if k != PROXY_VAR}
     return rest or None
@@ -51,10 +64,11 @@ def with_vscode_env(items, url: str):
     return items + [entry]
 
 
-def without_vscode_env(items, url: str):
+def without_vscode_env(items, base: str):
     if not isinstance(items, list):
         return items
-    rest = [i for i in items if not (isinstance(i, dict) and i.get("name") == PROXY_VAR and i.get("value") == url)]
+    rest = [i for i in items
+            if not (isinstance(i, dict) and i.get("name") == PROXY_VAR and _ours(i.get("value"), base))]
     return rest or None
 
 
@@ -207,32 +221,35 @@ def update_file(path: Path, key: str, fn: Callable) -> str:
             backup.write_text(text)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp-roulette")
-    tmp.write_text(new)
+    tmp.unlink(missing_ok=True)
+    with open(tmp, "w", opener=open_private) as f:  # owner-only: the proxy URL carries its key
+        f.write(new)
     tmp.replace(path)
     return "updated" if text else "created"
 
 
 def connect_clients(cfg: dict, claude: bool = True, vscode: bool = True) -> list[str]:
     url = proxy_url(cfg)
+    shown = f"{proxy_base(cfg)}{KEY_PREFIX}…"  # the report may get pasted somewhere: leave the key out
     report = []
     if claude:
         status = update_file(CLAUDE_SETTINGS, "env", lambda v: with_claude_env(v, url))
-        report.append(f"{CLAUDE_SETTINGS}: env.{PROXY_VAR} = {url} ({status})")
+        report.append(f"{CLAUDE_SETTINGS}: env.{PROXY_VAR} = {shown} ({status})")
     if vscode:
         for path in vscode_settings_files():
             status = update_file(path, VSCODE_KEY, lambda v: with_vscode_env(v, url))
-            report.append(f"{path}: {VSCODE_KEY} {PROXY_VAR} = {url} ({status})")
+            report.append(f"{path}: {VSCODE_KEY} {PROXY_VAR} = {shown} ({status})")
     return report
 
 
 def disconnect_clients(cfg: dict) -> list[str]:
-    url = proxy_url(cfg)
+    base = proxy_base(cfg)
     report = []
     if CLAUDE_SETTINGS.exists():
-        status = update_file(CLAUDE_SETTINGS, "env", lambda v: without_claude_env(v, url))
+        status = update_file(CLAUDE_SETTINGS, "env", lambda v: without_claude_env(v, base))
         report.append(f"{CLAUDE_SETTINGS}: removed env.{PROXY_VAR} ({status})")
     for path in vscode_settings_files():
         if path.exists():
-            status = update_file(path, VSCODE_KEY, lambda v: without_vscode_env(v, url))
+            status = update_file(path, VSCODE_KEY, lambda v: without_vscode_env(v, base))
             report.append(f"{path}: removed {PROXY_VAR} from {VSCODE_KEY} ({status})")
     return report

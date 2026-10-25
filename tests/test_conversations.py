@@ -298,10 +298,11 @@ def proxy(monkeypatch):
     ProxyHandler.router = router
     ProxyHandler.pins = ConversationPins(router, ask=d.ask)
     ProxyHandler.upstream = urllib.parse.urlsplit(f"http://127.0.0.1:{upstream.server_port}")
+    ProxyHandler.key = "test-key"
     server = ThreadingHTTPServer(("127.0.0.1", 0), ProxyHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     FakeUpstream.seen, FakeUpstream.status = [], 200
-    yield f"http://127.0.0.1:{server.server_port}", router, d
+    yield f"http://127.0.0.1:{server.server_port}/k/test-key", router, d
     server.shutdown()
     upstream.shutdown()
 

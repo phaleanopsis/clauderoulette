@@ -17,20 +17,22 @@ import urllib.request
 from pathlib import Path
 
 from . import __version__
-from .config import LOGIN_DIR, TOKENS_FILE, file_lock, load_json, log, save_json
+from .config import CUSTOM_HOME, LOGIN_DIR, TOKENS_FILE, file_lock, load_json, log, save_json
 
 KEYCHAIN_SERVICE = "claude-roulette"
 OAUTH_BETA = "oauth-2025-04-20"
-# Claude Code's public OAuth client, as used by its own token refresh.
-OAUTH_TOKEN_URL = os.environ.get("CLAUDE_ROULETTE_TOKEN_URL", "https://platform.claude.com/v1/oauth/token")
+# Claude Code's public OAuth client, as used by its own token refresh. Fixed on purpose: the
+# refresh token sent here is a lasting login.
+OAUTH_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 REFRESH_MARGIN_S = 300
 USER_AGENT = f"claude-roulette/{__version__}"
 
 
 def _has_keychain() -> bool:
+    # A custom home brings its own config (e.g. claude_bin, run with a token): keep the real logins out of it.
     return (sys.platform == "darwin" and shutil.which("security") is not None
-            and not os.environ.get("CLAUDE_ROULETTE_NO_KEYCHAIN"))
+            and not os.environ.get("CLAUDE_ROULETTE_NO_KEYCHAIN") and not CUSTOM_HOME)
 
 
 def kc_read(service: str, account: str) -> str | None:
@@ -51,6 +53,8 @@ def kc_read(service: str, account: str) -> str | None:
 
 
 def kc_write(service: str, account: str, secret: str) -> None:
+    if any(c in s for s in (service, account) for c in '"\\\n\r'):
+        raise ValueError(f"unsafe Keychain service/account name: {service!r}/{account!r}")
     # `security -i` reads the command from stdin, so the secret never shows up in `ps`.
     cmd = f'add-generic-password -U -s "{service}" -a "{account}" -X {secret.encode().hex()}\n'
     out = subprocess.run(["security", "-i"], input=cmd, capture_output=True, text=True)
@@ -75,8 +79,7 @@ def write_secret(name: str, secret: str) -> None:
         return
     tokens = load_json(TOKENS_FILE, {})
     tokens[name] = secret
-    save_json(TOKENS_FILE, tokens)
-    TOKENS_FILE.chmod(0o600)
+    save_json(TOKENS_FILE, tokens)  # created 0600 (see config.save_json)
 
 
 # --------------------------------------------------------------------------- OAuth credentials

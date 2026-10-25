@@ -20,7 +20,7 @@ import threading
 import time
 from collections import defaultdict
 
-from .config import HOME
+from .config import HOME, ensure_home, open_private
 
 LOG_FILE = HOME / "usage-log.jsonl"
 FIELDS = ("input", "cache_read", "cache_creation", "output")
@@ -39,7 +39,8 @@ def record(account: str, model: str, usage: dict[str, int], headers: dict[str, s
            **{f: usage.get(f, 0) for f in FIELDS},
            "h5": h.get(pre + "5h-utilization"), "d7": h.get(pre + "7d-utilization"),
            "h5_reset": h.get(pre + "5h-reset"), "d7_reset": h.get(pre + "7d-reset")}
-    with _lock, open(LOG_FILE, "a") as f:
+    ensure_home()
+    with _lock, open(LOG_FILE, "a", opener=open_private) as f:
         f.write(json.dumps(row) + "\n")
 
 

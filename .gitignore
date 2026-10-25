@@ -5,7 +5,7 @@ __pycache__/
 *.pyc
 .DS_Store
 
-# Never commit anything from the runtime folder (~/.claude-rotator) if it ends up here
+# Never commit anything from the runtime folder (~/.claude-roulette) if it ends up here
 config.json
 state.json
 tokens.json

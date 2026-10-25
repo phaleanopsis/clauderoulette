@@ -19,18 +19,18 @@ from pathlib import Path
 from . import __version__
 from .config import LOGIN_DIR, TOKENS_FILE, file_lock, load_json, log, save_json
 
-KEYCHAIN_SERVICE = "claude-rotator"
+KEYCHAIN_SERVICE = "claude-roulette"
 OAUTH_BETA = "oauth-2025-04-20"
 # Claude Code's public OAuth client, as used by its own token refresh.
-OAUTH_TOKEN_URL = os.environ.get("CLAUDE_ROTATOR_TOKEN_URL", "https://platform.claude.com/v1/oauth/token")
+OAUTH_TOKEN_URL = os.environ.get("CLAUDE_ROULETTE_TOKEN_URL", "https://platform.claude.com/v1/oauth/token")
 OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 REFRESH_MARGIN_S = 300
-USER_AGENT = f"claude-rotator/{__version__}"
+USER_AGENT = f"claude-roulette/{__version__}"
 
 
 def _has_keychain() -> bool:
     return (sys.platform == "darwin" and shutil.which("security") is not None
-            and not os.environ.get("CLAUDE_ROTATOR_NO_KEYCHAIN"))
+            and not os.environ.get("CLAUDE_ROULETTE_NO_KEYCHAIN"))
 
 
 def kc_read(service: str, account: str) -> str | None:

@@ -1,16 +1,16 @@
-// Menu bar companion for claude-rotator.
+// Menu bar companion for claude-roulette.
 //
-// Reads ~/.claude-rotator/state.json (written by `claude-rotator serve` every ~30 s)
+// Reads ~/.claude-roulette/state.json (written by `claude-roulette serve` every ~30 s)
 // and shows the active account plus 5h/weekly usage. It never touches credentials:
 // actions shell out to launchctl and to the CLI command recorded in the state file.
 //
-// Build: `claude-rotator install` (or see build_app() in claude_rotator/service.py).
+// Build: `claude-roulette install` (or see build_app() in claude_roulette/service.py).
 
 import AppKit
 import SwiftUI
 
-let rotatorHome = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude-rotator")
-let serveLabel = "com.user.claude-rotator"
+let rouletteHome = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude-roulette")
+let serveLabel = "com.user.claude-roulette"
 
 struct UsageRow: Decodable {
     let name: String
@@ -22,7 +22,7 @@ struct UsageRow: Decodable {
     let source: String?
 }
 
-struct RotatorState: Decodable {
+struct RouletteState: Decodable {
     let current: String?
     let usages: [String: UsageRow]?
     let blocked_until: [String: Double]?
@@ -33,7 +33,7 @@ struct RotatorState: Decodable {
     let primary: String?
     let emails: [String: String?]?
     let next_ping: String?
-    let command: [String]?  // argv that runs the CLI, e.g. [python, "-m", "claude_rotator"]
+    let command: [String]?  // argv that runs the CLI, e.g. [python, "-m", "claude_roulette"]
 }
 
 private let isoParser = ISO8601DateFormatter()
@@ -54,7 +54,7 @@ func fmtReset(_ date: Date?) -> String {
 
 @MainActor
 final class Model: ObservableObject {
-    @Published var state: RotatorState?
+    @Published var state: RouletteState?
     @Published var message: String?
     @Published var busy = false
     private var timer: Timer?
@@ -71,11 +71,11 @@ final class Model: ObservableObject {
     }
 
     func reload() {
-        guard let data = try? Data(contentsOf: rotatorHome.appendingPathComponent("state.json")) else {
+        guard let data = try? Data(contentsOf: rouletteHome.appendingPathComponent("state.json")) else {
             state = nil
             return
         }
-        state = try? JSONDecoder().decode(RotatorState.self, from: data)
+        state = try? JSONDecoder().decode(RouletteState.self, from: data)
     }
 
     var updatedAt: Date? { parseDate(state?.updated_at) }
@@ -120,11 +120,11 @@ final class Model: ObservableObject {
     }
 
     func openLog() {
-        NSWorkspace.shared.open(rotatorHome.appendingPathComponent("serve.log"))
+        NSWorkspace.shared.open(rouletteHome.appendingPathComponent("serve.log"))
     }
 
     func openConfig() {
-        NSWorkspace.shared.open(rotatorHome)
+        NSWorkspace.shared.open(rouletteHome)
     }
 
     private func run(_ exe: String, _ args: [String], label: String) {
@@ -228,11 +228,11 @@ struct Panel: View {
                 }
             }
             if !m.running && m.state != nil {
-                Text("If Restart doesn't help, check the log. After moving the repo or updating Python, run `claude-rotator install` again.")
+                Text("If Restart doesn't help, check the log. After moving the repo or updating Python, run `claude-roulette install` again.")
                     .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
             }
             if m.accounts.isEmpty {
-                Text("No data yet. Run `claude-rotator add` and `install`.")
+                Text("No data yet. Run `claude-roulette add` and `install`.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             ForEach(m.accounts, id: \.self) { name in
@@ -274,7 +274,7 @@ struct BarLabel: View {
 }
 
 @main
-struct ClaudeRotatorBar: App {
+struct ClaudeRouletteBar: App {
     @StateObject private var model = Model()
 
     var body: some Scene {

@@ -2,50 +2,24 @@ version = 1
 revision = 5
 requires-python = ">=3.10"
 
-[manifest]
-members = [
-    "claude-rotator",
-    "claude-rotator-science",
-]
-
 [[package]]
-name = "claude-rotator"
+name = "claude-roulette"
 version = "0.6.0"
 source = { editable = "." }
 
-[package.optional-dependencies]
-science = [
-    { name = "claude-rotator-science" },
-]
-
 [package.dev-dependencies]
 dev = [
-    { name = "claude-rotator-science" },
     { name = "pytest" },
     { name = "ruff" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "claude-rotator-science", marker = "extra == 'science'", editable = "packages/claude-rotator-science" }]
-provides-extras = ["science"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "claude-rotator-science", editable = "packages/claude-rotator-science" },
     { name = "pytest", specifier = ">=8" },
     { name = "ruff", specifier = ">=0.6" },
 ]
-
-[[package]]
-name = "claude-rotator-science"
-version = "0.2.0"
-source = { editable = "packages/claude-rotator-science" }
-dependencies = [
-    { name = "claude-rotator" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "claude-rotator", editable = "." }]
 
 [[package]]
 name = "colorama"

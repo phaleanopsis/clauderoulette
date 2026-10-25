@@ -26,7 +26,6 @@ from .config import HOME, load_json, log, save_json
 from .router import Router
 
 PINS_FILE = HOME / "conversation-pins.json"
-LEGACY_SCIENCE_PINS = HOME / "science-pins.json"  # written by claude-rotator-science 0.1
 KEEP_DAYS = 30
 TTL_S = {"5m": 300, "1h": 3600}
 
@@ -143,9 +142,7 @@ class ConversationPins:
 
     @staticmethod
     def _load() -> dict[str, dict]:
-        pins = load_json(PINS_FILE, None)
-        if pins is None:
-            pins = {k: {**p, "client": "science"} for k, p in load_json(LEGACY_SCIENCE_PINS, {}).items()}
+        pins = load_json(PINS_FILE, {})
         cutoff = time.time() - KEEP_DAYS * 86400
         return {k: p for k, p in pins.items() if p.get("last_seen", 0) > cutoff}
 
@@ -282,7 +279,7 @@ class ConversationPins:
 
     def ask_question(self, q: Question, answered) -> None:
         log(f"conv={q.key[:8]} asking ({q.kind}): {' / '.join(q.buttons)}")
-        self.ask("Claude Rotator", q.message, q.buttons, answered, timeout=self.cfg["pin_hold_s"])
+        self.ask("Claude Roulette", q.message, q.buttons, answered, timeout=self.cfg["pin_hold_s"])
 
     def _take_fresh_on(self) -> str | None:
         """The account to start fresh on after a recent "Cancel sending", once, if it still has room."""

@@ -3,7 +3,7 @@
 Anthropic doesn't document how cache reads, cache writes, uncached input and output weigh
 against the 5h and weekly limits. Every proxied response carries the account's current
 utilization in its rate-limit headers, so `serve` appends one row per response to
-usage-log.jsonl, and `claude-rotator measure` fits
+usage-log.jsonl, and `claude-roulette measure` fits
 
     Δ utilization (this response -> the next one on the same account)
         ≈ a·input + b·cache_read + c·cache_creation + d·output      (of this response's tokens)

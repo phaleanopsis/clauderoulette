@@ -13,16 +13,16 @@ from pathlib import Path
 
 from . import __version__
 
-SERVE_LABEL = "com.user.claude-rotator"
-BAR_LABEL = "com.user.claude-rotator.bar"
+SERVE_LABEL = "com.user.claude-roulette"
+BAR_LABEL = "com.user.claude-roulette.bar"
 AGENTS_DIR = Path.home() / "Library" / "LaunchAgents"
-APP_DIR = Path.home() / "Applications" / "Claude Rotator.app"
-APP_EXE = APP_DIR / "Contents" / "MacOS" / "ClaudeRotatorBar"
+APP_DIR = Path.home() / "Applications" / "Claude Roulette.app"
+APP_EXE = APP_DIR / "Contents" / "MacOS" / "ClaudeRouletteBar"
 
 
 def cli_command() -> list[str]:
     """argv that runs this installation's CLI; launchd and the menu bar app use it."""
-    return [sys.executable, "-m", "claude_rotator"]
+    return [sys.executable, "-m", "claude_roulette"]
 
 
 def build_app() -> None:
@@ -32,7 +32,7 @@ def build_app() -> None:
     APP_EXE.parent.mkdir(parents=True, exist_ok=True)
     with open(APP_DIR / "Contents" / "Info.plist", "wb") as f:
         plistlib.dump({
-            "CFBundleName": "Claude Rotator",
+            "CFBundleName": "Claude Roulette",
             "CFBundleIdentifier": BAR_LABEL,
             "CFBundleExecutable": APP_EXE.name,
             "CFBundlePackageType": "APPL",
@@ -40,7 +40,7 @@ def build_app() -> None:
             "LSMinimumSystemVersion": "13.0",
             "LSUIElement": True,  # menu bar only, no Dock icon
         }, f)
-    with as_file(files("claude_rotator") / "menubar" / "ClaudeRotatorBar.swift") as swift_src:
+    with as_file(files("claude_roulette") / "menubar" / "ClaudeRouletteBar.swift") as swift_src:
         subprocess.run(["xcrun", "swiftc", "-parse-as-library", "-swift-version", "5", "-O",
                         "-target", f"{os.uname().machine}-apple-macos13", "-o", str(APP_EXE), str(swift_src)],
                        check=True)
@@ -109,7 +109,7 @@ def service_mismatch() -> str | None:
             program = plistlib.load(f).get("ProgramArguments", [])
     except (FileNotFoundError, plistlib.InvalidFileException):
         return None
-    if program[1:3] != ["-m", "claude_rotator"]:
+    if program[1:3] != ["-m", "claude_roulette"]:
         return f"the background service was installed by an older version ({' '.join(program)})"
     if not Path(program[0]).exists():
         return f"the background service runs {program[0]}, which no longer exists"

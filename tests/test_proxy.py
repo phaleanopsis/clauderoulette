@@ -8,10 +8,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from claude_rotator import credentials
-from claude_rotator.config import DEFAULTS
-from claude_rotator.proxy import FORCE_HEADER, ProxyHandler
-from claude_rotator.router import Router
+from claude_roulette import credentials
+from claude_roulette.config import DEFAULTS
+from claude_roulette.proxy import FORCE_HEADER, ProxyHandler
+from claude_roulette.router import Router
 
 
 class FakeUpstream(BaseHTTPRequestHandler):

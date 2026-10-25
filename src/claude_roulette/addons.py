@@ -1,11 +1,9 @@
-"""Optional add-ons, installed as separate distributions (e.g. `claude-rotator[science]`).
+"""Optional add-ons. They ship with the package but are off until listed in config.json:
 
-An add-on registers a factory under the `claude_rotator.addons` entry-point group:
+    "addons": ["science"]
 
-    [project.entry-points."claude_rotator.addons"]
-    science = "claude_rotator_science:ScienceAddon"
-
-The factory is called with no arguments and returns an object with these attributes:
+An add-on is a class in its own module, listed in BUILTIN. It's created with no arguments
+and has these attributes:
 
     defaults: dict                         extra config keys and their default values
     start(router) -> None                  called once by `serve` before the proxy starts
@@ -18,12 +16,12 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from importlib.metadata import entry_points
+from importlib import import_module
 
-from .config import log
+from .config import CONFIG_FILE, load_json, log
 from .conversations import Conversation
 
-GROUP = "claude_rotator.addons"
+BUILTIN = {"science": "claude_roulette.science:ScienceAddon"}  # name -> module:class
 
 
 @dataclass
@@ -40,15 +38,17 @@ _loaded: dict[str, object] | None = None
 
 
 def load() -> dict[str, object]:
-    """Installed add-ons by name; one that fails to import is logged and skipped."""
+    """Enabled add-ons by name; an unknown or broken one is logged and skipped."""
     global _loaded
     if _loaded is None:
         _loaded = {}
-        for ep in entry_points(group=GROUP):
+        # Read straight from the file: load_config() needs the add-ons' defaults first.
+        for name in load_json(CONFIG_FILE, {}).get("addons", []):
             try:
-                _loaded[ep.name] = ep.load()()
+                module, cls = BUILTIN[name].split(":")
+                _loaded[name] = getattr(import_module(module), cls)()
             except Exception as e:  # a broken add-on must not take the proxy down
-                log(f"add-on {ep.name} not loaded: {e!r}")
+                log(f"add-on {name} not loaded: {e!r}")
     return _loaded
 
 

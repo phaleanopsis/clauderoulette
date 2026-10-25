@@ -1,8 +1,8 @@
 from datetime import timedelta
 
-from claude_rotator.config import DEFAULTS
-from claude_rotator.router import Router
-from claude_rotator.usage import Usage, least_used, now, score, usage_from_headers
+from claude_roulette.config import DEFAULTS
+from claude_roulette.router import Router
+from claude_roulette.usage import Usage, least_used, now, score, usage_from_headers
 
 CFG = {**DEFAULTS, "accounts": ["a", "b"], "primary": "a"}
 

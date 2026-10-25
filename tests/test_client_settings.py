@@ -2,8 +2,8 @@ import json
 
 import pytest
 
-from claude_rotator import client_settings as cs
-from claude_rotator.client_settings import edit_top_level
+from claude_roulette import client_settings as cs
+from claude_roulette.client_settings import edit_top_level
 
 URL = "http://127.0.0.1:8789"
 
@@ -89,6 +89,6 @@ def test_update_file_backs_up_original_once(tmp_path):
     assert cs.update_file(path, "env", lambda v: cs.with_claude_env(v, URL)) == "updated"
     assert cs.update_file(path, "env", lambda v: cs.with_claude_env(v, URL)) == "already up to date"
     assert cs.update_file(path, "env", lambda v: cs.with_claude_env(v, "http://127.0.0.1:1")) == "updated"
-    assert (tmp_path / "settings.json.bak-rotator").read_text() == '{"model": "opus"}'
+    assert (tmp_path / "settings.json.bak-roulette").read_text() == '{"model": "opus"}'
     assert cs.update_file(tmp_path / "new" / "settings.json", "env",
                           lambda v: cs.with_claude_env(v, URL)) == "created"

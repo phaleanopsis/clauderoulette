@@ -2,7 +2,7 @@
 
 The files are JSONC (VS Code allows comments and trailing commas), so they're edited as
 text: only the value of one top-level key is replaced, and everything else, including
-comments and formatting, is kept byte for byte. The first edit leaves a `.bak-rotator`
+comments and formatting, is kept byte for byte. The first edit leaves a `.bak-roulette`
 copy of the original next to the file.
 """
 
@@ -202,11 +202,11 @@ def update_file(path: Path, key: str, fn: Callable) -> str:
     if new == text:
         return "already up to date"
     if text:
-        backup = path.with_name(path.name + ".bak-rotator")
-        if not backup.exists():  # keep the pre-rotator original across reinstalls
+        backup = path.with_name(path.name + ".bak-roulette")
+        if not backup.exists():  # keep the pre-roulette original across reinstalls
             backup.write_text(text)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp-rotator")
+    tmp = path.with_name(path.name + ".tmp-roulette")
     tmp.write_text(new)
     tmp.replace(path)
     return "updated" if text else "created"

@@ -1,4 +1,4 @@
-"""claude-rotator: run several Claude subscription accounts side by side.
+"""claude-roulette: run several Claude subscription accounts side by side.
 
 How credentials work: `add` runs Claude Code once in a throwaway config dir so you can
 /login as the account. The resulting OAuth credential (access + refresh token) is moved
@@ -13,6 +13,6 @@ Stdlib only. Secrets never go on a command line or into logs.
 from importlib.metadata import PackageNotFoundError, version
 
 try:
-    __version__ = version("claude-rotator")
+    __version__ = version("claude-roulette")
 except PackageNotFoundError:  # running from a source tree that isn't installed
     __version__ = "0.0.0"

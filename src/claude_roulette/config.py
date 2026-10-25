@@ -1,4 +1,4 @@
-"""Paths, defaults and the on-disk config/state files under ~/.claude-rotator."""
+"""Paths, defaults and the on-disk config/state files under ~/.claude-roulette."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
-HOME = Path(os.environ.get("CLAUDE_ROTATOR_HOME", Path.home() / ".claude-rotator"))
+HOME = Path(os.environ.get("CLAUDE_ROULETTE_HOME", Path.home() / ".claude-roulette"))
 CONFIG_FILE = HOME / "config.json"
 STATE_FILE = HOME / "state.json"
 LOCK_FILE = HOME / ".lock"
@@ -20,6 +20,7 @@ PRIME_CWD = HOME / "prime"  # pings run here so they don't clutter your project 
 
 DEFAULTS = {
     "accounts": [],
+    "addons": [],  # optional add-ons to load, e.g. ["science"] (see addons.py)
     "emails": {},
     "primary": None,  # preferred account
     "claude_bin": "claude",

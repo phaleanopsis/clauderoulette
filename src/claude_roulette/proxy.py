@@ -25,7 +25,7 @@ from .conversations import (
 from .credentials import AuthDead, access_token
 from .router import Router
 
-FORCE_HEADER = "x-rotator-account"  # set via ANTHROPIC_CUSTOM_HEADERS to pin an account
+FORCE_HEADER = "x-roulette-account"  # set via ANTHROPIC_CUSTOM_HEADERS to pin an account
 
 HEAD_BYTES = 16384  # enough of a response to hold its usage block
 TAIL_BYTES = 4096  # the final message_delta, with output_tokens
@@ -127,7 +127,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         account = self.pins.resolve(q, answer.get("button") if done.is_set() else None)
         if account is None:
             self._fail(400, {"type": "invalid_request_error",
-                             "message": "Message not sent: you cancelled it in Claude Rotator. To start fresh, "
+                             "message": "Message not sent: you cancelled it in Claude Roulette. To start fresh, "
                                         f"{how_to_start_fresh(q.client)}. To continue this conversation, "
                                         "send the message again."})
         return account
@@ -191,7 +191,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 log(f"429 on {name}, retrying on another account")
         if resp is None:
             if self.stream_open:
-                self._fail(502, {"type": "api_error", "message": "claude-rotator: no upstream account reachable"})
+                self._fail(502, {"type": "api_error", "message": "claude-roulette: no upstream account reachable"})
             else:
                 self.send_error(502, "no upstream account reachable")
             return

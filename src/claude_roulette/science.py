@@ -1,6 +1,8 @@
-"""claude-rotator add-on for Claude Science: tell the core which conversation a request is.
+"""Add-on for Claude Science: tell the core which conversation a request is.
 
-The core (claude_rotator.conversations) keeps each conversation on one account, places
+Off unless config.json has `"addons": ["science"]`.
+
+The core (claude_roulette.conversations) keeps each conversation on one account, places
 new ones by load and asks before moving a warm one. This add-on only recognises Science's
 requests and reads their conversation id.
 """
@@ -9,9 +11,9 @@ from __future__ import annotations
 
 import json
 
-from claude_rotator.addons import Route
-from claude_rotator.conversations import Conversation
-from claude_rotator.router import Router
+from .addons import Route
+from .conversations import Conversation
+from .router import Router
 
 SURFACE = "operon"  # X-Anthropic-Surface sent by Claude Science
 
@@ -40,7 +42,7 @@ def science_conversation(headers, body: bytes) -> Conversation | None:
 
 
 class ScienceAddon:
-    """Entry point registered under `claude_rotator.addons`."""
+    """Loaded by addons.load() when "science" is enabled."""
 
     defaults = DEFAULTS
 

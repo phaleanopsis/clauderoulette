@@ -1,4 +1,4 @@
-"""claude-rotator: run several Claude subscription accounts side by side.
+"""claude-roulette: run several Claude subscription accounts side by side.
 
   add NAME [--primary]  log in once as that account and keep its OAuth credential
   remove NAME           forget an account and delete its stored credential
@@ -126,7 +126,7 @@ def cmd_remove(args, cfg):
 def cmd_status(args, cfg):
     mismatch = service.service_mismatch()
     if mismatch:
-        print(f"warning: {mismatch}; run `claude-rotator install` again to update it\n")
+        print(f"warning: {mismatch}; run `claude-roulette install` again to update it\n")
     state = load_json(STATE_FILE, {})
     if proxy_running(cfg) and state.get("usages"):
         usages = [Usage(**{**u, "session_reset": parse_ts(u["session_reset"]),
@@ -270,7 +270,7 @@ def cmd_uninstall(args, cfg):
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser(prog="claude-rotator", description=__doc__,
+    p = argparse.ArgumentParser(prog="claude-roulette", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)

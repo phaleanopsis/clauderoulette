@@ -7,13 +7,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from claude_rotator import addons, credentials
-from claude_rotator.config import DEFAULTS
-from claude_rotator.conversations import PINS_FILE, ConversationPins
-from claude_rotator.proxy import ProxyHandler
-from claude_rotator.router import Router
-from claude_rotator_science import DEFAULTS as SCIENCE_DEFAULTS
-from claude_rotator_science import science_conversation
+from claude_roulette import addons, credentials
+from claude_roulette.config import CONFIG_FILE, DEFAULTS, save_json
+from claude_roulette.conversations import PINS_FILE, ConversationPins
+from claude_roulette.proxy import ProxyHandler
+from claude_roulette.router import Router
+from claude_roulette.science import DEFAULTS as SCIENCE_DEFAULTS
+from claude_roulette.science import science_conversation
 
 
 class FakeUpstream(BaseHTTPRequestHandler):
@@ -54,6 +54,8 @@ def setup():
     upstream = serve(FakeUpstream)
     cfg = {**DEFAULTS, **SCIENCE_DEFAULTS, "accounts": ["a", "b"], "primary": "a"}
     router = Router(cfg)
+    save_json(CONFIG_FILE, {"addons": ["science"]})
+    addons._loaded = None
     addon = addons.load()["science"]
     addon.start(router)
     ProxyHandler.router = router
@@ -64,6 +66,8 @@ def setup():
     yield f"http://127.0.0.1:{server.server_port}", cfg, pins
     server.shutdown()
     upstream.shutdown()
+    CONFIG_FILE.unlink()
+    addons._loaded = None
 
 
 def call(base, body, surface="operon"):
@@ -104,3 +108,8 @@ def test_other_clients_are_not_claimed(setup):
     base, cfg, pins = setup
     call(base, science_body("conv1"), surface="cli")
     assert pins.pins.get("conv1", {}).get("client") != "science"
+
+
+def test_science_is_off_unless_enabled():
+    addons._loaded = None
+    assert addons.load() == {}

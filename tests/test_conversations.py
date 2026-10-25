@@ -9,10 +9,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from claude_rotator import credentials, measure
-from claude_rotator import proxy as proxy_mod
-from claude_rotator.config import DEFAULTS
-from claude_rotator.conversations import (
+from claude_roulette import credentials, measure
+from claude_roulette import proxy as proxy_mod
+from claude_roulette.config import DEFAULTS
+from claude_roulette.conversations import (
     PINS_FILE,
     Conversation,
     ConversationPins,
@@ -20,9 +20,9 @@ from claude_rotator.conversations import (
     claude_code_conversation,
     response_usage,
 )
-from claude_rotator.proxy import ProxyHandler
-from claude_rotator.router import Router
-from claude_rotator.usage import Usage, now
+from claude_roulette.proxy import ProxyHandler
+from claude_roulette.router import Router
+from claude_roulette.usage import Usage, now
 
 CFG = {**DEFAULTS, "accounts": ["a", "b"], "primary": "a"}
 

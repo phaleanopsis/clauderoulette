@@ -16,10 +16,12 @@ here; add-ons (e.g. Claude Science) hand over their own `Conversation`.
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 from . import notify
 from .config import HOME, load_json, log, save_json
@@ -28,6 +30,8 @@ from .router import Router
 PINS_FILE = HOME / "conversation-pins.json"
 KEEP_DAYS = 30
 TTL_S = {"5m": 300, "1h": 3600}
+CLIENT_NAMES = {"code": "Claude Code", "science": "Claude Science"}
+SESSION_ID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 
 
 def how_to_start_fresh(client: str) -> str:
@@ -84,6 +88,49 @@ def claude_code_conversation(req: dict) -> Conversation | None:
     main = parent is None and bool(req.get("tools"))
     return Conversation(session, "code", main=main, parent=parent,
                         lane="sub" if parent else "agent" if main else "side")
+
+
+def claude_code_title(session: str) -> str | None:
+    """The session's name as Claude Code lists it: a /rename title, else the generated one.
+
+    Read from the transcript (~/.claude/projects/<project>/<session>.jsonl), where Claude Code
+    appends a custom-title or ai-title entry whenever it changes; the last one counts.
+    """
+    if not SESSION_ID.fullmatch(session):  # it goes into a glob pattern
+        return None
+    projects = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "projects"
+    titles: dict[str, str] = {}
+    for path in projects.glob(f"*/{session}.jsonl"):
+        with open(path, errors="replace") as f:
+            for line in f:
+                if '-title"' not in line:  # skip parsing the (large) message entries
+                    continue
+                try:
+                    entry = json.loads(line)
+                except ValueError:
+                    continue
+                kind = {"custom-title": "customTitle", "ai-title": "aiTitle"}.get(entry.get("type"))
+                if kind and isinstance(entry.get(kind), str):
+                    titles[kind] = entry[kind]
+    return titles.get("customTitle") or titles.get("aiTitle")
+
+
+def conversation_title(client: str, key: str) -> str | None:
+    try:
+        if client == "code":
+            return claude_code_title(key)
+        from . import addons  # addons imports this module
+        return getattr(addons.load().get(client), "title", lambda key: None)(key)
+    except Exception as e:  # a name is a nicety: never let it break a request
+        log(f"title of {client} conv={key[:8]}: {e!r}")
+        return None
+
+
+def describe(client: str, key: str) -> str:
+    """How a conversation is named in questions, e.g. 'Claude Code conversation "Fix login" (4af495b0)'."""
+    title = conversation_title(client, key)
+    name = CLIENT_NAMES.get(client, client)
+    return f'{name} conversation "{title}" ({key[:8]})' if title else f"{name} conversation {key[:8]}"
 
 
 def cache_ttls(req: dict) -> list[int]:
@@ -239,7 +286,7 @@ class ConversationPins:
                 return None
             return self._question(key, pin, conv.client, "full", target,
                                   [f"Switch and send on {target} account", "Cancel sending"],
-                                  f"The {cur} Claude account is full. The current conversation {key[:8]} "
+                                  f"The {cur} Claude account is full. The {describe(conv.client, key)} "
                                   f"({ctx}k tokens) can continue on the {target} account; its cache is rebuilt "
                                   f"there once.\n\nCancel sending: the message is not sent. To start fresh, "
                                   f"{fresh}; the new conversation goes to {target}.")
@@ -251,8 +298,8 @@ class ConversationPins:
                 return self._question(key, pin, conv.client, "warn", target,
                                       [f"Switch and send on {target} account", "Send on current account",
                                        "Cancel sending"],
-                                      f"The {cur} Claude account is at {pct:.0f}% of its 5h window. The current "
-                                      f"conversation {key[:8]} ({ctx}k tokens) runs on it.\n\n"
+                                      f"The {cur} Claude account is at {pct:.0f}% of its 5h window. The "
+                                      f"{describe(conv.client, key)} ({ctx}k tokens) runs on it.\n\n"
                                       f"Switch: this message and the rest of the conversation go to the {target} "
                                       "account; the cache is rebuilt there once.\n"
                                       f"Send on current account: stays on {cur}; you'll be asked again when it is "
@@ -262,7 +309,7 @@ class ConversationPins:
         if hint and pin.get("context", 0) >= hint and not pin.get("hinted"):
             pin["hinted"] = True
             return self._question(key, pin, conv.client, "hint", None, ["Send prompt anyway", "Cancel sending"],
-                                  f"The current conversation {key[:8]} is quite large and re-reads {ctx}k tokens "
+                                  f"The {describe(conv.client, key)} is quite large and re-reads {ctx}k tokens "
                                   "with every message. If you don't need its full history, a fresh conversation "
                                   "uses far less of your limits.\n\n"
                                   f"Cancel sending: the message is not sent. To start fresh, {fresh}.")
@@ -330,6 +377,11 @@ class ConversationPins:
             return {k: dict(p) for k, p in self.pins.items()}
 
 
+def short_title(title: str | None, width: int = 12) -> str:
+    title = " ".join((title or "").split())
+    return title if len(title) <= width else title[:width - 1] + "…"
+
+
 def status_lines(pins: dict, limit: int = 10) -> list[str]:
     from datetime import datetime
 
@@ -337,10 +389,11 @@ def status_lines(pins: dict, limit: int = 10) -> list[str]:
     if not recent:
         return []
     now_s = time.time()
-    lines = ["", "  conversation      client   account       context  cache  last turn"]
+    lines = ["", "  conversation           client   account       context  cache  last turn"]
     for key, p in recent:
         cache = "warm" if p.get("warm_until", 0) > now_s else "cold"
-        lines.append(f"  {key[:16]:<16}  {p.get('client', '?'):<7}  {p['account']:<12} "
+        title = short_title(conversation_title(p.get("client", "?"), key))
+        lines.append(f"  {key[:8]}  {title:<12}  {p.get('client', '?'):<7}  {p['account']:<12} "
                      f"{p.get('context', 0) / 1000:6.0f}k  {cache:<5}  "
                      f"{datetime.fromtimestamp(p.get('last_seen', 0)):%a %H:%M}")
     return lines

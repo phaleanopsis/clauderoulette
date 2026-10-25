@@ -133,7 +133,7 @@ When it asks, your message is held until you answer (up to 2 minutes), and the a
 | Account full | Switch and send on B / Cancel |
 | Context passes 150k tokens (once) | Send anyway / Cancel |
 
-*Cancel* only stops this message; nothing reaches Anthropic. To start fresh, type `/clear` (or `/compact` to keep a summary). `claude-roulette status` lists recent conversations with their account, size and cache state.
+*Cancel* only stops this message; nothing reaches Anthropic. To start fresh, type `/clear` (or `/compact` to keep a summary). `claude-roulette status` lists recent conversations with their title, account, size and cache state; questions name the app (Claude Code or Science) and the conversation's title.
 </details>
 
 <details>

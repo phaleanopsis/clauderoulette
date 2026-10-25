@@ -18,7 +18,10 @@ from claude_roulette.conversations import (
     ConversationPins,
     cache_ttls,
     claude_code_conversation,
+    claude_code_title,
+    describe,
     response_usage,
+    short_title,
 )
 from claude_roulette.proxy import ProxyHandler
 from claude_roulette.router import Router
@@ -230,7 +233,7 @@ def test_large_context_asks_once(pins):
     p.record(code("c1"), {"cache_read": 160_000})
     q = question(p, code("c1"))
     assert q.kind == "hint" and q.buttons == ["Send prompt anyway", "Cancel sending"]
-    assert "160k" in q.message
+    assert "160k" in q.message and "Claude Code conversation c1" in q.message  # c1: no transcript, no title
     assert p.resolve(q, "Send prompt anyway") == "a"
     p.pins["c1"]["asked_at"] = 0
     assert question(p, code("c1")) is None
@@ -413,3 +416,29 @@ def test_measure_recovers_weights():
     fit = {line.split()[0]: float(line.split("=")[1].split("x")[0])
            for line in out.splitlines() if "x uncached input" in line}
     assert abs(fit["cache_read"] - 0.1) < 0.01 and abs(fit["output"] - 5) < 0.1
+
+
+SESSION = "4af495b0-16c2-4056-a3da-9a0e2423ec31"
+
+
+def test_claude_code_title_prefers_a_rename(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    transcript = tmp_path / "projects" / "-Users-x-repo" / f"{SESSION}.jsonl"
+    transcript.parent.mkdir(parents=True)
+    entries = [{"type": "user", "message": {"content": "ai-title\""}},
+               {"type": "ai-title", "aiTitle": "First guess", "sessionId": SESSION},
+               {"type": "ai-title", "aiTitle": "Fix the login", "sessionId": SESSION}]
+    transcript.write_text("".join(json.dumps(e) + "\n" for e in entries) + "{broken -title\"\n")
+    assert claude_code_title(SESSION) == "Fix the login"
+    assert describe("code", SESSION) == 'Claude Code conversation "Fix the login" (4af495b0)'
+    with open(transcript, "a") as f:
+        f.write(json.dumps({"type": "custom-title", "customTitle": "Login work", "sessionId": SESSION}) + "\n")
+        f.write(json.dumps({"type": "ai-title", "aiTitle": "Later guess", "sessionId": SESSION}) + "\n")
+    assert claude_code_title(SESSION) == "Login work"
+    assert claude_code_title("../*") is None and describe("code", "../*") == "Claude Code conversation ../*"
+
+
+def test_short_title():
+    assert short_title("Fix the login") == "Fix the log…"  # 12 characters, ellipsis included
+    assert short_title("Echo test") == "Echo test" and short_title(None) == ""
+    assert short_title("Two\nlines") == "Two lines"

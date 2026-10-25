@@ -10,6 +10,7 @@ and has these attributes:
     route(headers, body) -> Route | None   claim an inference request (None: not ours)
     snapshot() -> dict                     saved in state.json under state["addons"][name]
     status(snapshot) -> list[str]          extra lines for `status`, given that saved snapshot
+    title(key) -> str | None               optional: a conversation's name, shown in questions
 """
 
 from __future__ import annotations

@@ -16,6 +16,8 @@ again at every login, and Science must be quit and reopened to pick it up.
 from __future__ import annotations
 
 import json
+import re
+import sqlite3
 import subprocess
 from pathlib import Path
 
@@ -27,6 +29,7 @@ from .router import Router
 SURFACE = "operon"  # X-Anthropic-Surface sent by Claude Science
 APP = "Claude Science.app"
 DAEMON = "claude-science serve"  # the background service that sends the requests
+SCIENCE_HOME = Path.home() / ".claude-science"
 
 DEFAULTS = {
     # "pin" keeps each conversation on one account; "observe" passes it through on
@@ -86,6 +89,30 @@ def daemon_warning(url: str, base: str) -> str | None:
     return f"Claude Science {problem}. Quit Claude Science completely and open it again."
 
 
+def conversation_title(key: str) -> str | None:
+    """The conversation's name in Science, read (read-only) from the signed-in org's database.
+
+    The conversation is a root frame; requests carry its id without dashes.
+    """
+    if not re.fullmatch(r"[0-9a-f]{32}", key.replace("-", "")):
+        return None
+    k = key.replace("-", "")
+    frame_id = f"{k[:8]}-{k[8:12]}-{k[12:16]}-{k[16:20]}-{k[20:]}"
+    try:
+        org = json.loads((SCIENCE_HOME / "active-org.json").read_text())["org_uuid"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    db = SCIENCE_HOME / "orgs" / str(org) / "operon-cli.db"
+    if not db.exists():
+        return None
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=1)
+    try:
+        row = con.execute("SELECT name FROM frames WHERE id = ?", (frame_id,)).fetchone()
+    finally:
+        con.close()
+    return row[0] if row and isinstance(row[0], str) and row[0].strip() else None
+
+
 def science_conversation(headers, body: bytes) -> Conversation | None:
     """The conversation of a Claude Science request, None for any other client.
 
@@ -120,6 +147,9 @@ class ScienceAddon:
             return None
         observe = self.cfg is None or self.cfg["science_mode"] == "observe"
         return Route(conversation=None if conv.key == "?" else conv, passthrough=observe)
+
+    def title(self, key: str) -> str | None:
+        return conversation_title(key)
 
     def snapshot(self) -> dict:
         return {}

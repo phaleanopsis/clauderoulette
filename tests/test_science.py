@@ -200,3 +200,18 @@ def test_install_sets_the_url_only_while_science_is_on(monkeypatch):
     save_json(CONFIG_FILE, {"addons": []})
     assert "removed" in cli.connect_science(cfg) and "ANTHROPIC_BASE_URL" not in fake.env
     CONFIG_FILE.unlink()
+
+
+def test_title_comes_from_sciences_database(tmp_path, monkeypatch):
+    import sqlite3
+    monkeypatch.setattr(science, "SCIENCE_HOME", tmp_path)
+    (tmp_path / "active-org.json").write_text(json.dumps({"org_uuid": "org1"}))
+    (tmp_path / "orgs" / "org1").mkdir(parents=True)
+    con = sqlite3.connect(tmp_path / "orgs" / "org1" / "operon-cli.db")
+    con.execute("CREATE TABLE frames (id TEXT, name TEXT)")
+    con.execute("INSERT INTO frames VALUES ('6176e3bb-b447-4f09-98ec-3ecfcee279df', 'Organotropism analysis')")
+    con.commit()
+    con.close()
+    assert science.conversation_title("6176e3bbb4474f0998ec3ecfcee279df") == "Organotropism analysis"
+    assert science.conversation_title("00000000b4474f0998ec3ecfcee279df") is None
+    assert science.conversation_title("x' OR '1'='1") is None

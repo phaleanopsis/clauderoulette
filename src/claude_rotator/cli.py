@@ -2,8 +2,9 @@
 
   add NAME [--primary]  log in once as that account and keep its OAuth credential
   remove NAME           forget an account and delete its stored credential
-  status                show 5h-session and weekly usage for every account
-  serve                 local proxy that picks the account per request + 07:00 ping
+  status                show 5h-session and weekly usage for every account, and pinned conversations
+  measure               estimate how cache reads, writes, input and output count toward the limits
+  serve                 local proxy that keeps each conversation on one account + 07:00 ping
   run [-- ARGS]         exec `claude ARGS` through the proxy
   prime [--account N]   ping now (default: least-used account without an active window)
   install / uninstall   start `serve` + the menu bar app at every login (macOS LaunchAgents)
@@ -23,8 +24,9 @@ import urllib.parse
 from datetime import datetime
 from http.server import ThreadingHTTPServer
 
-from . import __version__, client_settings, service
+from . import __version__, addons, client_settings, measure, service
 from .config import HOME, LOGIN_DIR, STATE_FILE, TOKENS_FILE, load_config, load_json, log, save_config_keys, save_json
+from .conversations import ConversationPins, status_lines
 from .credentials import KEYCHAIN_SERVICE, _has_keychain, import_login, kc_delete
 from .priming import claude_env, next_ping_text, prime_account, run_auto_prime, run_schedule
 from .proxy import FORCE_HEADER, ProxyHandler, proxy_running
@@ -132,6 +134,11 @@ def cmd_status(args, cfg):
                   for u in state["usages"].values()]
         print(f"proxy on :{cfg['proxy_port']}, state from {state['updated_at']}")
         print_table(usages, cfg, state.get("current"), state.get("blocked_until"), state.get("dead"))
+        for line in status_lines(state.get("conversations") or {}):
+            print(line)
+        for name, addon in addons.load().items():
+            for line in addon.status((state.get("addons") or {}).get(name) or {}):
+                print(line)
     else:
         print("proxy not running, probing directly")
         print_table([probe(a, cfg) for a in cfg["accounts"]], cfg)
@@ -141,7 +148,10 @@ def cmd_serve(args, cfg):
     if not cfg["accounts"]:
         sys.exit("no accounts configured; run `add` first")
     router = Router(cfg)
+    for addon in addons.load().values():
+        addon.start(router)
     ProxyHandler.router = router
+    ProxyHandler.pins = pins = ConversationPins(router)
     ProxyHandler.upstream = urllib.parse.urlsplit(cfg["upstream"])
     ProxyHandler.debug = args.debug
     try:
@@ -151,7 +161,7 @@ def cmd_serve(args, cfg):
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     log(f"proxy on http://127.0.0.1:{cfg['proxy_port']} -> {cfg['upstream']}, "
-        f"accounts {cfg['accounts']}, primary {cfg['primary']}")
+        f"accounts {cfg['accounts']}, primary {cfg['primary']}, add-ons {list(addons.load()) or 'none'}")
 
     state = load_json(STATE_FILE, {})
     state.update(pid=os.getpid(), started_at=now().isoformat(timespec="seconds"),
@@ -182,9 +192,16 @@ def cmd_serve(args, cfg):
         run_schedule(cfg, usages, state)
         run_auto_prime(cfg, usages, state)
         state.update(router.snapshot(), accounts=cfg["accounts"], primary=cfg["primary"],
-                     emails=cfg["emails"], next_ping=next_ping_text(cfg, state))
+                     emails=cfg["emails"], next_ping=next_ping_text(cfg, state),
+                     conversations=pins.snapshot(),
+                     addons={n: a.snapshot() for n, a in addons.load().items()})
         save_json(STATE_FILE, state)
         time.sleep(args.tick)
+
+
+def cmd_measure(args, cfg):
+    for line in measure.report(measure.load_rows(), min_samples=args.min_samples):
+        print(line)
 
 
 def cmd_run(args, cfg):
@@ -265,6 +282,9 @@ def main(argv=None):
     rm.add_argument("name")
     rm.set_defaults(fn=cmd_remove)
     sub.add_parser("status").set_defaults(fn=cmd_status)
+    ms = sub.add_parser("measure", help="estimate how much each token type counts toward the limits")
+    ms.add_argument("--min-samples", type=int, default=30)
+    ms.set_defaults(fn=cmd_measure)
     s = sub.add_parser("serve")
     s.add_argument("--tick", type=float, default=30, help="seconds between scheduler checks")
     s.add_argument("--debug", action="store_true", help="log every rate-limit header received")

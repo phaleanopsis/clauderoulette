@@ -19,7 +19,9 @@ Use two (or more) Claude subscriptions from one Claude Code setup. A local proxy
  │         everything else (/usage, profile, …) → passed through untouched      │
  │         429 → mark account blocked, retry once on the other                  │
  │ Router  usage per account: /api/oauth/usage every 5 min + live response      │
- │         headers; sticky "use it or lose it" score, primary preferred         │
+ │         headers; "use it or lose it" score, primary preferred                │
+ │ Pins    each conversation stays on one account (its prompt cache lives      │
+ │         there); new and cache-cold ones go where there's most room          │
  │ Tokens  refreshed before expiry; the rotated refresh token is saved back     │
  │ 07:00   least weekly usage → claude -p "Say hello" --model haiku             │
  └──────────────────────────────────────────────────────────────────────────────┘
@@ -48,7 +50,45 @@ Every account gets a score:
 - **Excluded:** an account at ≥ 95 % of its session, ≥ 98 % of its week, rate-limited, or with a dead login.
 - **Reserving capacity:** `account_caps` in `config.json` lowers those caps per account, e.g. `{"main": {"session": 80, "weekly": 90}}` keeps 20 % of each 5h window and 10 % of the week on `main` for the chat app.
 
-The proxy stays on the current account unless another one scores **1.5× higher** and at least **15 minutes** have passed since the last switch. A full account is left immediately. This avoids flip-flopping because each switch loses the prompt cache.
+### One account per conversation
+
+The API keeps no conversation state: every request re-sends the whole conversation, so nothing is lost when a conversation changes account. What *is* per account is the prompt cache (each subscription is its own organization). The first turn after a move re-sends the whole context uncached, about 10× the cost of a cached turn on a 150k-token conversation. So the proxy decides per conversation, not globally ([`conversations.py`](src/claude_rotator/conversations.py)):
+
+| Situation | Account |
+|---|---|
+| New conversation | best score after discounting its active conversations' load: score ÷ (1 + their context / `pin_load_scale`) |
+| Subagent | its parent's |
+| Cache warm | stays; if the account fills up, you're asked first (below) |
+| Cache cold (idle past its TTL) | free to move to the best account; if only the long-TTL part (e.g. a 1h system prompt) may still be cached, only when another scores `switch_ratio` (1.5×) higher |
+
+Conversations are identified by the session id in `metadata.user_id`: Claude Code sends JSON with `session_id` (and `parent_session_id` for a subagent); add-ons recognise other clients. The cache TTL comes from the request's own `cache_control` marks (5 min or 1 h). Turns from the main agent (requests with tools) record the conversation's context size; side calls like titles don't. Requests without an id fall back to one shared current account, which only changes when another scores **1.5× higher** and **15 minutes** have passed.
+
+**Asking before moving.** For the questions below, the main agent's request is *held* while a dialog asks, and the answer decides where that very request goes. While it waits (up to `pin_hold_s`, 120 s), the proxy has already answered with an event stream and sends `ping` events every 10 s, as Anthropic's own stream does, so neither client's first-byte watchdog gives up. No answer in time: the request is sent as before. Side calls and subagents are never held.
+
+| Trigger | Buttons | The held request |
+|---|---|---|
+| Warm conversation of 20k+ tokens, account past 85 % of its 5h window | **Switch and send on B account** / Send on current account / Cancel sending | goes to B (one cache rebuild); or stays on A, and you're asked again once A is full; or is cancelled |
+| Account full | **Switch and send on B account** / Cancel sending | goes to B, so no usage-limit error and nothing to re-send; or is cancelled |
+| Context passes 150k tokens (once per conversation) | **Send prompt anyway** / Cancel sending | is sent; or is cancelled |
+
+The proxy can't start a new conversation itself: the history lives in the client, which re-sends all of it with every message. So *Cancel sending* only stops this message (nothing reaches Anthropic), and the client shows "Message not sent: you cancelled it in Claude Rotator. To start fresh, type /clear (or /compact to keep a summary). To continue this conversation, send the message again." (in Claude Science: "open a new conversation"). After a cancel in the first two dialogs, the next new conversation is placed on B; after a cancel because A is full, the current conversation moves to B as well, so `/compact` or a resend works. For the held request only, the client doesn't see Anthropic's response headers (an error from Anthropic arrives as a stream `error` event instead).
+
+`claude-rotator status` lists recent conversations with client, account, context size and whether the cache is warm. Pins are kept in `~/.claude-rotator/conversation-pins.json` for 30 days.
+
+| Key (`config.json`) | Default | Meaning |
+|---|---|---|
+| `code_mode` | `"pin"` | Claude Code: `"pin"`, `"observe"` (log session ids, use the shared account) or `"off"` |
+| `pin_active_s` | `3600` | how long after its last turn a conversation counts toward its account's load |
+| `pin_load_scale` | `100000` | context tokens of active conversations that halve an account's score |
+| `pin_warn_pct` | `85` | 5h usage at which a big warm conversation's account triggers the question |
+| `pin_warn_min_context` | `20000` | smaller conversations are never asked about |
+| `pin_ask_every_s` | `600` | the same conversation isn't asked again sooner |
+| `pin_hold_s` | `120` | how long a request waits for an answer |
+| `pin_hint_tokens` | `150000` | context size for the one-time Continue / Start fresh question (`0` turns it off) |
+
+### How much do cache reads count?
+
+Anthropic doesn't document how cache reads, cache writes, uncached input and output weigh against the 5h and weekly limits. Every proxied turn appends its token counts and the account's utilization headers to `~/.claude-rotator/usage-log.jsonl` (no content). `claude-rotator measure` fits the change in utilization between consecutive turns on an account against the tokens of the earlier turn, per model family, and reports each token type relative to uncached input. The headers only have whole-percent precision and traffic outside the proxy adds noise, so give it a few hundred turns.
 
 ## Setup
 
@@ -64,7 +104,7 @@ claude-rotator status
 claude-rotator install                    # background proxy + menu bar app + client settings (below)
 ```
 
-The install is editable, so the command always runs the code in this checkout. If you'd rather not install a global command, run every command as `uv run claude-rotator …` from the repository instead.
+The install is editable, so the command always runs the code in this checkout. To add the optional [Claude Science add-on](#add-ons), install `'.[science]'` instead of `.`. If you'd rather not install a global command, run every command as `uv run claude-rotator …` from the repository instead.
 
 To try it without installing anything:
 
@@ -83,7 +123,7 @@ claude-rotator install
 
 `install` is safe to re-run at any time. It rebuilds the menu bar app, rewrites both LaunchAgents with the current paths, restarts them, and leaves settings that are already correct untouched. Sessions that go through the proxy fail for a second or two while it restarts.
 
-If you installed with `uv tool install` *without* `--editable`, run `uv tool install --reinstall .` before `install`.
+If you installed with `uv tool install` *without* `--editable`, run `uv tool install --reinstall .` (or `'.[science]'`) before `install`. A non-editable install is also the way to keep the repository in `~/Documents`: macOS doesn't let the launchd service read files there.
 
 ### Route every Claude Code session (done by `install`)
 
@@ -174,11 +214,27 @@ Each `add` creates a separate login session for that machine, so two machines ne
 
 Config: `~/.claude-rotator/config.json`. Only the keys you set are stored; everything else follows `DEFAULTS` in [`src/claude_rotator/config.py`](src/claude_rotator/config.py). Log: `~/.claude-rotator/serve.log`.
 
+## Add-ons
+
+Add-ons are separate packages under [`packages/`](packages/). The base install contains none of their code; each one is installed as an extra of `claude-rotator`, and `serve` picks up every installed add-on automatically.
+
+| Extra | Package | What it does |
+|---|---|---|
+| `science` | [`claude-rotator-science`](packages/claude-rotator-science/README.md) | keeps each Claude Science conversation on one account, so its prompt cache isn't lost |
+
+```bash
+uv tool install --editable '.[science]'   # add it (or switch back with `uv tool install --editable .`)
+claude-rotator install                    # restart the service so it loads the change
+```
+
+An add-on registers a factory under the `claude_rotator.addons` entry-point group; [`addons.py`](src/claude_rotator/addons.py) documents the interface. It can claim an inference request and hand the core its `Conversation` (which the core then pins like a Claude Code session), force an account, pass it through on the client's own login, or receive the token counts afterwards.
+
 ## Development
 
 ```bash
-uv sync                  # creates .venv with the package (editable) and the dev tools
+uv sync                  # creates .venv with the package, all add-ons (all editable) and the dev tools
 uv run pytest            # unit tests, plus the proxy against a fake upstream; never touches the real Keychain
+                         # (also runs each add-on's tests under packages/*/tests)
 uv run ruff check
 ```
 
@@ -187,11 +243,15 @@ uv run ruff check
 | `config.py` | paths under `~/.claude-rotator`, `DEFAULTS`, config/state files |
 | `credentials.py` | Keychain / token file, OAuth refresh, importing a login |
 | `usage.py` | usage endpoint and rate-limit headers, the account score |
-| `router.py` | which account each request gets |
+| `router.py` | account scores; the shared account for requests without a conversation id |
+| `conversations.py` | one account per conversation: placement, cache TTLs, asking before a move |
+| `notify.py` | macOS notifications and question dialogs |
+| `measure.py` | the per-turn usage log and the `measure` fit |
 | `proxy.py` | the local HTTP proxy |
 | `priming.py` | the scheduled and automatic pings |
 | `service.py` | LaunchAgents and the menu bar app build |
 | `client_settings.py` | JSONC-preserving edits of the Claude Code and VS Code settings |
+| `addons.py` | loading optional add-ons and the hook they implement |
 | `cli.py` | the `claude-rotator` commands |
 
 ## Tested vs. unverified
@@ -208,7 +268,9 @@ Tested against your real Keychain: writing, updating, reading and deleting an it
 Verified against Anthropic (2026-10-25, Claude Code 2.1.308):
 - `/api/oauth/usage` works with the imported credentials for both accounts.
 - Claude Code sends `/v1/messages` to `ANTHROPIC_BASE_URL`; the proxy swaps the token and the reply comes back.
-- Rate-limit headers are `anthropic-ratelimit-unified-{5h,7d}-utilization` (a 0–1 fraction) and `-{5h,7d}-reset` (unix seconds), as the parser assumes.
+- Rate-limit headers are `anthropic-ratelimit-unified-{5h,7d}-utilization` (a 0–1 fraction, two decimals) and `-{5h,7d}-reset` (unix seconds), as the parser assumes.
+- Claude Code's `metadata.user_id` is JSON with a `session_id` that stays the same across turns; a session through the proxy keeps its cache (cache reads continue at the full context size after pinning).
+- Claude Science conversations keep the same root `session_id` across turns, side tasks and frames, and stay fully cached through the proxy.
 
 Not yet seen in practice: an actual token refresh against `platform.claude.com`. The first one happens when an access token nears expiry; check `serve.log` for "refreshed access token".
 

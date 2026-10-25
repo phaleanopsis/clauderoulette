@@ -1,6 +1,6 @@
 [project]
 name = "claude-rotator"
-version = "0.4.0"
+version = "0.6.0"
 description = "Rotate several Claude subscriptions behind one Claude Code setup via a local proxy"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -13,11 +13,21 @@ classifiers = [
 ]
 dependencies = []
 
+[project.optional-dependencies]
+# Add-ons are separate distributions under packages/, so the base install ships none of their code.
+science = ["claude-rotator-science"]
+
 [project.scripts]
 claude-rotator = "claude_rotator.cli:main"
 
 [dependency-groups]
-dev = ["pytest>=8", "ruff>=0.6"]
+dev = ["pytest>=8", "ruff>=0.6", "claude-rotator-science"]
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+claude-rotator-science = { workspace = true }
 
 [build-system]
 requires = ["uv_build>=0.7.21,<0.9"]
@@ -31,4 +41,8 @@ target-version = "py310"
 select = ["E", "F", "W", "I", "B", "UP"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "packages/claude-rotator-science/tests"]
+addopts = ["--import-mode=importlib"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["claude_rotator", "claude_rotator_science"]

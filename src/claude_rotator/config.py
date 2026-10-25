@@ -30,8 +30,11 @@ DEFAULTS = {
     "account_caps": {},  # per-account overrides, e.g. {"main": {"session": 80, "weekly": 90}}
     "weekly_factor_max": 50.0,  # upper bound on the weekly "use it before reset" boost
     "primary_bias": 1.2,  # primary's score is multiplied by this
-    "switch_ratio": 1.5,  # only leave the current account if another scores this much higher...
-    "min_dwell_s": 900,  # ...and we've been on the current one at least this long (prompt cache)
+    # Requests without a conversation id share one current account: it only changes when another
+    # scores switch_ratio times higher and min_dwell_s has passed. switch_ratio also gates moving a
+    # conversation whose long-TTL cache part may still be warm.
+    "switch_ratio": 1.5,
+    "min_dwell_s": 900,
     "probe_interval_s": 300,
     "prime_model": "haiku",
     "prime_prompt": "Say hello",
@@ -40,6 +43,16 @@ DEFAULTS = {
     "auto_prime": False,  # also ping any account as soon as its 5h window has expired
     "prime_cooldown_s": 900,
     "quiet_hours": [],  # e.g. [0, 7] -> no auto_prime from 00:00 to 06:59
+    # Conversation pinning (conversations.py). Claude Code: "pin" keeps each session on one
+    # account; "observe" only logs its session ids and uses the global router; "off" ignores ids.
+    "code_mode": "pin",
+    "pin_active_s": 3600,  # a conversation counts toward its account's load this long after its last turn
+    "pin_load_scale": 100000,  # context tokens of active conversations that halve an account's score
+    "pin_warn_pct": 85.0,  # ask what to do once a warm conversation's account passes this 5h usage
+    "pin_warn_min_context": 20000,  # ...but only for conversations at least this big
+    "pin_ask_every_s": 600,  # don't ask about the same conversation more often than this
+    "pin_hold_s": 120,  # how long a request waits for an answer before it's sent as before
+    "pin_hint_tokens": 150000,  # ask once (Continue / Start fresh) when a context passes this (0: never)
 }
 
 
@@ -58,7 +71,9 @@ def save_json(path: Path, data) -> None:
 
 
 def load_config() -> dict:
-    cfg = {**DEFAULTS, **load_json(CONFIG_FILE, {})}
+    from . import addons  # imported here: add-ons import this module
+
+    cfg = {**DEFAULTS, **addons.defaults(), **load_json(CONFIG_FILE, {})}
     if not cfg["primary"] and cfg["accounts"]:
         cfg["primary"] = cfg["accounts"][0]
     return cfg

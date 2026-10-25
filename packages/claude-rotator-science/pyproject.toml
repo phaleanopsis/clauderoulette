@@ -1,0 +1,23 @@
+[project]
+name = "claude-rotator-science"
+version = "0.2.0"
+description = "claude-rotator add-on: keep each Claude Science conversation on one account"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Phaleanopsis" }]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+]
+dependencies = ["claude-rotator>=0.6"]
+
+[project.entry-points."claude_rotator.addons"]
+science = "claude_rotator_science:ScienceAddon"
+
+[build-system]
+requires = ["uv_build>=0.7.21,<0.9"]
+build-backend = "uv_build"
+
+[tool.uv.sources]
+claude-rotator = { workspace = true }

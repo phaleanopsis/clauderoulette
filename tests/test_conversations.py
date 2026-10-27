@@ -123,14 +123,14 @@ def test_subagent_follows_parent(pins):
 def test_warm_conversation_stays_when_another_account_is_better(pins):
     p, _ = pins
     acc(p, code("c1"))
-    p.router.usages["b"] = usage("b", 0, s_hours=0.3)  # b suddenly far better
+    p.router.usages["a"] = usage("a", 0, w_pct=70)  # a has used up today's share
     assert acc(p, code("c1")) == "a"
 
 
 def test_cold_conversation_moves_to_the_best_account(pins):
     p, _ = pins
     acc(p, code("c1"))
-    p.router.usages["b"] = usage("b", 0, s_hours=0.3)
+    p.router.usages["a"] = usage("a", 0, w_pct=70)
     p.pins["c1"]["warm_until"] = p.pins["c1"]["partial_until"] = time.time() - 1
     assert acc(p, code("c1")) == "b"
 

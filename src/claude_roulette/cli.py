@@ -46,7 +46,7 @@ from .credentials import KEYCHAIN_SERVICE, _has_keychain, import_login, kc_delet
 from .priming import claude_env, next_ping_text, prime_account, run_auto_prime, run_schedule
 from .proxy import FORCE_HEADER, KEY_PREFIX, ProxyHandler, port_taken, proxy_status
 from .router import Router
-from .usage import Usage, caps, least_used, now, parse_ts, probe
+from .usage import Usage, caps, daily_reserve, least_used, left_today, now, parse_ts, probe
 
 # --------------------------------------------------------------------------- display
 
@@ -71,15 +71,17 @@ def print_table(usages: list[Usage], cfg: dict, current: str | None = None,
     router.blocked_until = blocked or {}
     router.dead = dead or {}
     scores = router.scores([u.name for u in usages])
-    print(f"  {'account':<12}{'5h used':>9}{'resets':>9}{'week used':>11}{'resets':>9}{'score':>8}  info")
+    print(f"  {'account':<12}{'5h used':>9}{'resets':>9}{'week used':>11}{'left today':>12}{'resets':>9}{'score':>8}  info")
     for u in usages:
         mark = "*" if u.name == current else " "
         info = cfg["emails"].get(u.name) or ""
         if u.name == cfg["primary"]:
             info += " (primary)"
-        if u.name in cfg["account_caps"]:
+        if {"session", "weekly"} & cfg["account_caps"].get(u.name, {}).keys():
             s_cap, w_cap = caps(u.name, cfg)
             info += f" (caps {s_cap:.0f}%/{w_cap:.0f}%)"
+        if reserve := daily_reserve(u.name, cfg):
+            info += f" (keeps {reserve:g}%/day)"
         if u.name in router.dead or u.error:
             print(f"{mark} {u.name:<12}  error: {router.dead.get(u.name) or u.error}")
             continue
@@ -89,8 +91,9 @@ def print_table(usages: list[Usage], cfg: dict, current: str | None = None,
             sc = "429"
         else:
             sc = "full"
+        left = left_today(u, cfg)
         print(f"{mark} {u.name:<12}{fmt_pct(u.session_pct):>9}{fmt_reset(u.session_reset):>9}"
-              f"{fmt_pct(u.weekly_pct):>11}{fmt_reset(u.weekly_reset):>9}{sc:>8}  {u.source} {info}")
+              f"{fmt_pct(u.weekly_pct):>11}{fmt_pct(None if left is None else max(left, 0.0)):>12}{fmt_reset(u.weekly_reset):>9}{sc:>8}  {u.source} {info}")
 
 
 # --------------------------------------------------------------------------- CLI
@@ -223,6 +226,8 @@ def cmd_serve(args, cfg):
         run_auto_prime(cfg, usages, state)
         state.update(router.snapshot(), accounts=cfg["accounts"], primary=cfg["primary"],
                      emails=cfg["emails"], next_ping=next_ping_text(cfg, state),
+                     caps={a: dict(zip(("session", "weekly"), caps(a, cfg))) for a in cfg["accounts"]},
+                     left_today={u.name: left_today(u, cfg) for u in usages},
                      conversations=pins.snapshot(),
                      addons={n: a.snapshot() for n, a in addons.load().items()})
         save_json(STATE_FILE, state)

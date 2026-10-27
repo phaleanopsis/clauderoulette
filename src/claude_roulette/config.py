@@ -35,7 +35,7 @@ DEFAULTS = {
     "session_cap": 95.0,  # % of 5h window at which an account is considered full
     "weekly_cap": 98.0,  # % of weekly limit at which an account is considered full
     "account_caps": {},  # per-account overrides, e.g. {"main": {"session": 80, "weekly": 90}}
-    "weekly_factor_max": 50.0,  # upper bound on the weekly "use it before reset" boost
+    "daily_reserve": 0.0,  # weekly % kept free per day left in the week; per account in account_caps
     "primary_bias": 1.2,  # primary's score is multiplied by this
     # Requests without a conversation id share one current account: it only changes when another
     # scores switch_ratio times higher and min_dwell_s has passed. switch_ratio also gates moving a

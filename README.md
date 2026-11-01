@@ -23,7 +23,7 @@ A local proxy receives every message Claude Code sends and forwards it on the ac
 
 Logins are stored in the macOS Keychain, separate from your normal Claude Code login, which is never read or changed. Tokens are never logged or written to disk.
 
-A menu bar app shows each account's 5-hour and weekly usage. Every morning at 07:00 the less-used account gets a tiny Haiku prompt so its 5-hour window is already running when you start work.
+A menu bar app shows each account's 5-hour and weekly usage and how much of the week's share is left today: an orange outline around the weekly bar shows how far usage may go before 5am tomorrow (see *How an account is chosen*). `status` shows the same in its `left today` column. The 5-hour window isn't paced: full windows back to back would reach the weekly limit long before the week ends. Every morning at 07:00 the less-used account gets a tiny Haiku prompt so its 5-hour window is already running when you start work.
 
 ## Install
 
@@ -76,11 +76,13 @@ The ones you're most likely to change:
 | Key | Default | What it does |
 |---|---|---|
 | `addons` | `[]` | Optional add-ons. `install` adds `"science"` (routes [Claude Science](#details)) if Claude Science is installed and you haven't set this key; `[]` turns it off |
-| `account_caps` | `{}` | Keep capacity free on an account, e.g. for the chat app: `{"personal": {"session": 80, "weekly": 90}}` |
+| `account_caps` | `{}` | Keep capacity free on an account, e.g. for the chat app: `{"personal": {"session": 80, "weekly": 90}}`, or per day left in the week: `{"personal": {"daily_reserve": 5}}` |
+| `daily_reserve` | `0` | Weekly % kept free for every day left in the week (today included), for all accounts |
 | `primary_bias` | `1.2` | How strongly the `--primary` account is preferred |
 | `schedule` | `["07:00"]` | Times to send the morning ping (`[]` turns it off) |
 | `pin_warn_pct` | `85` | 5h usage at which you're asked whether to move a conversation |
 | `pin_hint_tokens` | `150000` | Context size at which you're asked once whether to continue (`0` turns it off) |
+| `relogin_remind_s` | `3600` | With an account's login expired, how often a request brings up the dialog telling you to add it back |
 | `code_mode` | `"pin"` | `"pin"`: one account per conversation; `"off"`: switch freely |
 
 All keys and their defaults are in [`config.py`](src/claude_roulette/config.py).
@@ -104,11 +106,12 @@ All keys and their defaults are in [`config.py`](src/claude_roulette/config.py).
 
 Every account gets a score:
 
-- **Active 5h window:** unused % ÷ hours until reset, so capacity that's about to expire is used first.
-- **No active window:** a flat 10.
-- **Weekly pacing:** multiplied by how far the account is behind an even pace through its week (its weekly cap ÷ 7 per day, so 11.4 %/day for an account capped at 80 %) (up to `weekly_factor_max`, 50×). An account with lots left just before its weekly reset is drained first.
+- **Left today:** the weekly cap accrues evenly a day at a time, days running from 5am: by the end of today an account may have used the share of its week up to then, less today's daily reserve. Unused days carry over, overspending comes out of the next days.
+- **5h headroom:** multiplied by the unused share of the 5h window, so between accounts with about as much left today, work spreads to the one further from its 5h limit.
 - **Primary:** multiplied by `primary_bias`.
-- **Excluded:** at ≥ 95 % of its 5h window, ≥ 98 % of its week, rate-limited, or with an expired login.
+- **Used up today:** an account scores 0. New conversations go elsewhere, running ones stay until their cache goes cold and then move. When every account has used up today's share, the primary goes on.
+- **Daily reserve:** an account with `daily_reserve` never uses the last reserve × days left of its week, counting today as a whole day (with 5 %: 35 % on the first day, 5 % on the last), so that capacity stays free for the chat app.
+- **Excluded:** at ≥ 95 % of its 5h window, ≥ 98 % of its week (less its daily reserve), rate-limited, or with an expired login.
 
 A 429 from Anthropic marks the account blocked and the request is retried once on the other.
 </details>
@@ -144,7 +147,7 @@ When it asks, your message is held until you answer (up to 2 minutes), and the a
 - Secrets are passed to `security` on stdin, never on a command line where `ps` could see them.
 - They're never logged or written to `state.json`.
 - Tokens are refreshed before they expire and the new refresh token is saved back.
-- An account whose login is rejected (`invalid_grant`) is skipped until you run `add` again.
+- An account whose login is rejected (`invalid_grant`) is skipped until you run `add` again. The next request brings up a dialog naming the account and its email, with the `claude-roulette add NAME` command (**Copy command** puts it on the clipboard). It comes back every `relogin_remind_s` while the login stays dead. After `add`, the proxy uses the account again within `probe_interval_s` (5 min), without a restart.
 - On Linux, logins fall back to a chmod-600 `~/.claude-roulette/tokens.json`.
 - Tokens are only ever sent to `api.anthropic.com` and Anthropic's token endpoint; neither is a setting. With `CLAUDE_ROULETTE_HOME` set (meant for tests), the Keychain is not used at all.
 

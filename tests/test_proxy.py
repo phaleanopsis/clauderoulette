@@ -163,3 +163,48 @@ def test_proxy_status_tells_this_proxy_from_others(proxy, monkeypatch):
         s.bind(("127.0.0.1", 0))
         free = s.getsockname()[1]
     assert proxy_mod.proxy_status({"proxy_port": free}) == "down"
+
+
+def kill(name):
+    credentials.write_secret(name, "not json")  # an old setup-token: AuthDead on load
+    credentials._creds.clear()
+
+
+def test_expired_login_is_reported_with_how_to_add_it_back(proxy, relogin_asks):
+    ProxyHandler.router.cfg["emails"] = {"a": "a@example.com"}
+    kill("a")
+    assert call(proxy, "/v1/messages") == (200, "Bearer tok-b")
+    assert len(relogin_asks) == 1
+    message = relogin_asks[0][0]
+    assert "a@example.com" in message and "claude-roulette add a" in message
+    call(proxy, "/v1/messages")
+    assert len(relogin_asks) == 1  # still on screen: not asked twice
+    relogin_asks[0][1]("Later")
+    call(proxy, "/v1/messages")
+    assert len(relogin_asks) == 1  # answered, but within relogin_remind_s
+    ProxyHandler.router.cfg["relogin_remind_s"] = 0
+    call(proxy, "/v1/messages")
+    assert len(relogin_asks) == 2
+
+
+def test_all_logins_expired_says_which_to_add(proxy):
+    kill("a")
+    kill("b")
+    req = urllib.request.Request(proxy + "/v1/messages", data=b"{}", method="POST",
+                                 headers={"Authorization": "Bearer user-login"})
+    with pytest.raises(urllib.error.HTTPError) as e:
+        urllib.request.urlopen(req)
+    assert e.value.code == 502 and "claude-roulette add a" in e.value.read().decode()
+
+
+def test_readded_login_is_used_again(proxy, relogin_asks):
+    router = ProxyHandler.router
+    router.mark_dead("a", "revoked")
+    assert call(proxy, "/v1/messages") == (200, "Bearer tok-b")
+    relogin_asks[0][1]("Later")
+    router.revive("a")  # the run loop does this once a probe succeeds
+    router.current = None
+    assert call(proxy, "/v1/messages") == (200, "Bearer tok-a")
+    router.mark_dead("a", "revoked again")
+    call(proxy, "/v1/messages")
+    assert len(relogin_asks) == 2  # died again: reminded straight away

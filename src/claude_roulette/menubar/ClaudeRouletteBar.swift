@@ -24,6 +24,11 @@ struct UsageRow: Decodable {
     let source: String?
 }
 
+struct Caps: Decodable {
+    let session: Double
+    let weekly: Double
+}
+
 struct RouletteState: Decodable {
     let current: String?
     let usages: [String: UsageRow]?
@@ -35,6 +40,8 @@ struct RouletteState: Decodable {
     let primary: String?
     let emails: [String: String?]?
     let next_ping: String?
+    let caps: [String: Caps]?
+    let left_today: [String: Double?]?
 }
 
 private let isoParser = ISO8601DateFormatter()
@@ -42,6 +49,18 @@ private let isoParser = ISO8601DateFormatter()
 func parseDate(_ s: String?) -> Date? {
     guard let s else { return nil }
     return isoParser.date(from: s)
+}
+
+/// One usage bar's numbers: used, the account's cap, and what's left to use today.
+struct Gauge {
+    let pct: Double?
+    let cap: Double
+    /// Negative once today's share is overspent.
+    let left: Double?
+    let reset: Date?
+
+    /// Where usage may reach by the end of today.
+    var target: Double? { left.map { (pct ?? 0) + max($0, 0) } }
 }
 
 func fmtReset(_ date: Date?) -> String {
@@ -92,6 +111,22 @@ final class Model: ObservableObject {
     func usage(_ name: String) -> UsageRow? { state?.usages?[name] }
 
     func email(_ name: String) -> String? { state?.emails?[name] ?? nil }
+
+    /// Older state files have no caps; then the whole limit is the goal.
+    func caps(_ name: String) -> Caps { state?.caps?[name] ?? Caps(session: 100, weekly: 100) }
+
+    func sessionGauge(_ name: String) -> Gauge {
+        let u = usage(name)
+        // Not paced: full 5-hour windows back to back would reach the weekly limit long before the week ends.
+        return Gauge(pct: u?.session_pct, cap: caps(name).session, left: nil, reset: parseDate(u?.session_reset))
+    }
+
+    func weeklyGauge(_ name: String) -> Gauge {
+        let u = usage(name)
+        // Computed by serve: left_today() in usage.py.
+        return Gauge(pct: u?.weekly_pct, cap: caps(name).weekly, left: state?.left_today?[name] ?? nil,
+                     reset: parseDate(u?.weekly_reset))
+    }
 
     var labelText: String {
         guard running else { return "off" }
@@ -159,19 +194,37 @@ final class Model: ObservableObject {
 
 struct UsageBar: View {
     let title: String
-    let pct: Double?
-    let reset: Date?
+    let gauge: Gauge
 
     var body: some View {
+        let pct = gauge.pct ?? 0
         VStack(alignment: .leading, spacing: 2) {
             HStack {
                 Text(title).font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                Text(pct.map { "\(Int($0.rounded()))%" } ?? "–").font(.caption.monospacedDigit())
-                Text("· \(fmtReset(reset))").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                Text(gauge.pct.map { "\(Int($0.rounded()))%" } ?? "–").font(.caption.monospacedDigit())
+                if let l = gauge.left {
+                    Text(l > 0 ? String(format: "%.0f%% left today", l) : "used up today")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(l < 1 ? Color.orange : .secondary)
+                }
+                Text("· \(fmtReset(gauge.reset))").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
             }
-            ProgressView(value: min(max((pct ?? 0) / 100, 0), 1))
-                .tint((pct ?? 0) >= 90 ? .red : (pct ?? 0) >= 70 ? .orange : .accentColor)
+            GeometryReader { geo in
+                let w = geo.size.width
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.secondary.opacity(0.2))
+                    if let t = gauge.target {  // how far usage may go today
+                        Capsule().strokeBorder(Color.orange, lineWidth: 1.5)
+                            .frame(width: max(w * min(max(t / 100, 0), 1), 10))
+                    }
+                    // Usage on top, inset so the pace outline runs around it.
+                    Capsule().fill(pct >= gauge.cap ? Color.red : Color.accentColor)
+                        .frame(width: max((w - 4) * min(max(pct / 100, 0), 1), 0), height: 6)
+                        .padding(.leading, 2)
+                }
+            }
+            .frame(height: 10)
         }
     }
 }
@@ -208,8 +261,8 @@ struct AccountView: View {
                     Text("Rate-limited until \(until.formatted(date: .omitted, time: .shortened))")
                         .font(.caption).foregroundStyle(.red)
                 }
-                UsageBar(title: "5-hour", pct: u?.session_pct, reset: parseDate(u?.session_reset))
-                UsageBar(title: "Weekly", pct: u?.weekly_pct, reset: parseDate(u?.weekly_reset))
+                UsageBar(title: "5-hour", gauge: m.sessionGauge(name))
+                UsageBar(title: "Weekly", gauge: m.weeklyGauge(name))
             }
         }
     }

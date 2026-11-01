@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+import math
 import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from .config import UPSTREAM
 from .credentials import OAUTH_BETA, USER_AGENT, AuthDead, access_token
@@ -123,35 +124,69 @@ def caps(name: str, cfg: dict) -> tuple[float, float]:
     return own.get("session", cfg["session_cap"]), own.get("weekly", cfg["weekly_cap"])
 
 
-def score(u: Usage, cfg: dict) -> float | None:
-    """Higher = use this account first. None = not usable right now.
+def daily_reserve(name: str, cfg: dict) -> float:
+    """Weekly % kept free for every day left in the week, e.g. for the chat app."""
+    return cfg["account_caps"].get(name, {}).get("daily_reserve", cfg["daily_reserve"])
 
-    "Use it or lose it": an active 5h window with lots of headroom and little time left is
-    the most urgent capacity to burn. An idle account scores a flat 10 (using it opens a
-    fresh window). Weekly pacing scales everything: ahead of an even share of the weekly
-    cap per day (cap/7, e.g. 80%/7 = 11.4% for an account capped at 80%) is damped, behind
-    it is boosted. Headroom is measured up to the account's own caps.
+
+DAY_START_HOUR = 5  # days run from 5am to 5am, local time
+
+
+def day_start(t: datetime) -> datetime:
+    """The 5am that began t's day."""
+    local = t.astimezone()
+    start = local.replace(hour=DAY_START_HOUR, minute=0, second=0, microsecond=0)
+    return start if local >= start else start - timedelta(days=1)
+
+
+def days_left(reset: datetime) -> int:
+    """Days until the weekly reset, counting today as a whole day."""
+    return max(math.ceil((reset - day_start(now())) / timedelta(days=1)), 1)
+
+
+def left_today(u: Usage, cfg: dict) -> float | None:
+    """Weekly % the account may still use today, negative once today's share is overspent.
+
+    The week's cap accrues evenly, a day at a time from 5am: by the end of today the account
+    may have used the share of the week up to then, less today's daily reserve. Unused days
+    carry over, and so does a reserve the other day didn't need; overspending comes out of the
+    next days. Today's reserve stays free whatever has carried over.
+    """
+    if u.weekly_reset is None or u.weekly_reset <= now():
+        return None
+    week_start = u.weekly_reset - timedelta(days=7)
+    until = min(day_start(now()) + timedelta(days=1), u.weekly_reset)
+    accrued = min(max((until - week_start) / timedelta(days=7), 0.0), 1.0)
+    w_cap = caps(u.name, cfg)[1]
+    return w_cap * accrued - daily_reserve(u.name, cfg) - (u.weekly_pct or 0.0)
+
+
+def score(u: Usage, cfg: dict) -> float | None:
+    """Higher = use this account first. 0 = today's share is used up. None = not usable.
+
+    Mainly what's left of today's share (left_today), times the 5h window's headroom, so when
+    both accounts have about as much left today, work spreads to the one further from its 5h
+    limit. Never usable past the cap less the daily reserve for every day left, today
+    included as a whole day.
     """
     if u.error:
         return None
     s_cap, w_cap = caps(u.name, cfg)
     s_pct, w_pct = u.session_pct or 0.0, u.weekly_pct or 0.0
-    if w_pct >= w_cap:
+    left = left_today(u, cfg)
+    if left is None:  # no weekly window running
+        if w_pct >= w_cap:
+            return None
+        left = w_cap - w_pct
+    elif w_pct >= w_cap - daily_reserve(u.name, cfg) * days_left(u.weekly_reset):
         return None
     if u.window_active:
         if s_pct >= s_cap:
             return None
-        hours_left = max((u.session_reset - now()).total_seconds() / 3600, 0.25)
-        session_urgency = (s_cap - s_pct) / hours_left
+        headroom = (s_cap - s_pct) / s_cap
     else:
-        session_urgency = 10.0
-
-    if u.weekly_reset and u.weekly_reset > now():
-        days_left = max((u.weekly_reset - now()).total_seconds() / 86400, 0.1)
-        weekly_factor = min(cfg["weekly_factor_max"], ((w_cap - w_pct) / days_left) / (w_cap / 7))
-    else:
-        weekly_factor = 1.0
-    return session_urgency * weekly_factor
+        headroom = 1.0
+    return max(left, 0.0) * headroom
 
 
 def least_used(usages: list[Usage], cfg: dict) -> Usage | None:

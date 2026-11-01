@@ -39,6 +39,8 @@ class Router:
             s = score(self.usages.get(n) or Usage(n), self.cfg)
             if s is not None:
                 out[n] = s * (self.cfg["primary_bias"] if n == self.cfg["primary"] else 1.0)
+        if out and max(out.values()) <= 0 and self.cfg["primary"] in out:
+            out[self.cfg["primary"]] = 1.0  # every account has used today's share: the primary goes on
         return out
 
     def choose(self, exclude=()) -> str | None:
@@ -66,6 +68,12 @@ class Router:
             if name not in self.dead:
                 log(f"{name} disabled: {reason}")
             self.dead[name] = reason
+
+    def revive(self, name: str) -> None:
+        """The account works again (e.g. after `add`): route to it again."""
+        with self.lock:
+            if self.dead.pop(name, None) is not None:
+                log(f"{name} enabled again: its login works")
 
     def observe(self, name: str, status: int, headers: dict[str, str]) -> None:
         with self.lock:

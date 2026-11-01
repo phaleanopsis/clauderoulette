@@ -82,6 +82,7 @@ The ones you're most likely to change:
 | `schedule` | `["07:00"]` | Times to send the morning ping (`[]` turns it off) |
 | `pin_warn_pct` | `85` | 5h usage at which you're asked whether to move a conversation |
 | `pin_hint_tokens` | `150000` | Context size at which you're asked once whether to continue (`0` turns it off) |
+| `relogin_remind_s` | `3600` | With an account's login expired, how often a request brings up the dialog telling you to add it back |
 | `code_mode` | `"pin"` | `"pin"`: one account per conversation; `"off"`: switch freely |
 
 All keys and their defaults are in [`config.py`](src/claude_roulette/config.py).
@@ -146,7 +147,7 @@ When it asks, your message is held until you answer (up to 2 minutes), and the a
 - Secrets are passed to `security` on stdin, never on a command line where `ps` could see them.
 - They're never logged or written to `state.json`.
 - Tokens are refreshed before they expire and the new refresh token is saved back.
-- An account whose login is rejected (`invalid_grant`) is skipped until you run `add` again.
+- An account whose login is rejected (`invalid_grant`) is skipped until you run `add` again. The next request brings up a dialog naming the account and its email, with the `claude-roulette add NAME` command (**Copy command** puts it on the clipboard). It comes back every `relogin_remind_s` while the login stays dead. After `add`, the proxy uses the account again within `probe_interval_s` (5 min), without a restart.
 - On Linux, logins fall back to a chmod-600 `~/.claude-roulette/tokens.json`.
 - Tokens are only ever sent to `api.anthropic.com` and Anthropic's token endpoint; neither is a setting. With `CLAUDE_ROULETTE_HOME` set (meant for tests), the Keychain is not used at all.
 

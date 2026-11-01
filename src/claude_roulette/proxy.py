@@ -12,7 +12,7 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler
 
-from . import addons, measure
+from . import addons, measure, notify
 from .config import log, proxy_key
 from .conversations import (
     Conversation,
@@ -59,6 +59,7 @@ def proof(key: str, nonce: str) -> str:
 class ProxyHandler(BaseHTTPRequestHandler):
     router: Router
     pins: ConversationPins | None = None
+    relogin = notify.Relogin()
     upstream: urllib.parse.SplitResult
     key: str  # config.proxy_key()
     debug = False
@@ -258,11 +259,16 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 if resp.status != 429 or forced:
                     break
                 log(f"429 on {name}, retrying on another account")
+            self.relogin.remind(dict(self.router.dead), cfg)
         if resp is None:
+            reason = "no upstream account reachable"
+            if dead := [n for n in cfg["accounts"] if n in self.router.dead]:
+                reason += (f"; expired login: {', '.join(dead)}. "
+                           f"Run `claude-roulette add {dead[0]}` to add it back")
             if self.stream_open:
-                self._fail(502, {"type": "api_error", "message": "claude-roulette: no upstream account reachable"})
+                self._fail(502, {"type": "api_error", "message": f"claude-roulette: {reason}"})
             else:
-                self.send_error(502, "no upstream account reachable")
+                self.send_error(502, reason)
             return
         log(f"{self.command} {self.path.split('?')[0]} -> {name or 'passthrough'} {resp.status}")
         if self.stream_open:  # headers already sent while the request was held

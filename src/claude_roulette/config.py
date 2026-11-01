@@ -43,6 +43,7 @@ DEFAULTS = {
     "switch_ratio": 1.5,
     "min_dwell_s": 900,
     "probe_interval_s": 300,
+    "relogin_remind_s": 3600,  # with an account's login expired, remind how to add it back this often
     "prime_model": "haiku",
     "prime_prompt": "Say hello",
     "schedule": ["07:00"],  # local times to ping the least-used account

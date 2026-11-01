@@ -69,6 +69,12 @@ class Router:
                 log(f"{name} disabled: {reason}")
             self.dead[name] = reason
 
+    def revive(self, name: str) -> None:
+        """The account works again (e.g. after `add`): route to it again."""
+        with self.lock:
+            if self.dead.pop(name, None) is not None:
+                log(f"{name} enabled again: its login works")
+
     def observe(self, name: str, status: int, headers: dict[str, str]) -> None:
         with self.lock:
             self.requests[name] = self.requests.get(name, 0) + 1

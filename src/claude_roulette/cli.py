@@ -214,7 +214,9 @@ def cmd_serve(args, cfg):
                 u = probe(a, cfg)
                 if u.source == "dead":
                     router.mark_dead(a, u.error)
-                elif u.error:
+                elif not u.error:
+                    router.revive(a)
+                else:
                     transient_error = True
                     log(f"probe {a}: {u.error}")
                 router.merge_probe(u)
